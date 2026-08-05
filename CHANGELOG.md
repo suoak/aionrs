@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.10](https://github.com/suoak/aionrs/compare/v0.2.9...v0.2.10) (2026-08-05)
+
+
+### Bug Fixes
+
+* **runtime:** retry rate limits and preserve PowerShell UTF-8 ([540bcec](https://github.com/suoak/aionrs/commit/540bcec1012a220ad37f3b6cc98aea98cf4717b2))
+
 ## [0.2.9](https://github.com/iOfficeAI/aionrs/compare/v0.2.8...v0.2.9) (2026-07-28)
 
 
