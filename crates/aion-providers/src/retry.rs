@@ -29,7 +29,7 @@ where
 
 pub const MAX_STREAM_RETRIES: u32 = 2;
 pub const MAX_INITIAL_CONNECT_RETRIES: u32 = 2;
-const INITIAL_HTTP_5XX_RETRY_BACKOFFS: [Duration; 5] = [
+const INITIAL_RESPONSE_RETRY_BACKOFFS: [Duration; 5] = [
     Duration::from_secs(1),
     Duration::from_secs(5),
     Duration::from_secs(10),
@@ -75,36 +75,45 @@ fn is_initial_connect_error(error: &ProviderError) -> bool {
     }
 }
 
-/// Retry transient provider-side HTTP failures before stream consumption starts.
-pub(crate) async fn with_initial_http_5xx_retry<F, Fut, T>(f: F) -> Result<T, ProviderError>
+/// Retry transient provider-side failures before stream consumption starts.
+pub(crate) async fn with_initial_response_retry<F, Fut, T>(f: F) -> Result<T, ProviderError>
 where
     F: Fn() -> Fut,
     Fut: Future<Output = Result<T, ProviderError>>,
 {
-    let max_retries = INITIAL_HTTP_5XX_RETRY_BACKOFFS.len();
-    for (attempt, backoff) in INITIAL_HTTP_5XX_RETRY_BACKOFFS.iter().enumerate() {
+    let max_retries = INITIAL_RESPONSE_RETRY_BACKOFFS.len();
+    for (attempt, backoff) in INITIAL_RESPONSE_RETRY_BACKOFFS.iter().enumerate() {
         match f().await {
             Ok(val) => return Ok(val),
-            Err(e) => match initial_http_5xx_status(&e) {
-                Some(status) => {
-                    tracing::warn!(
-                        attempt = attempt + 1,
-                        max_retries,
-                        status,
-                        "retrying initial provider request after server error"
-                    );
-                    tokio::time::sleep(*backoff).await;
-                }
-                _ => return Err(e),
-            },
+            Err(e) => {
+                let Some((reason, status, delay)) = initial_response_retry(&e, *backoff) else {
+                    return Err(e);
+                };
+                tracing::warn!(
+                    attempt = attempt + 1,
+                    max_retries,
+                    reason,
+                    status,
+                    delay_ms = delay.as_millis(),
+                    "retrying initial provider request"
+                );
+                tokio::time::sleep(delay).await;
+            }
         }
     }
     f().await
 }
 
-fn initial_http_5xx_status(error: &ProviderError) -> Option<u16> {
+fn initial_response_retry(error: &ProviderError, fallback_delay: Duration) -> Option<(&'static str, u16, Duration)> {
     match error {
-        ProviderError::Api { status, .. } if (500..=599).contains(status) => Some(*status),
+        ProviderError::Api { status, .. } if (500..=599).contains(status) => {
+            Some(("server_error", *status, fallback_delay))
+        }
+        ProviderError::RateLimited { retry_after_ms, .. } => Some((
+            "rate_limit",
+            429,
+            Duration::from_millis(*retry_after_ms).max(fallback_delay),
+        )),
         _ => None,
     }
 }

@@ -39,7 +39,7 @@ mod tests {
             vec![
                 "-NoProfile",
                 "-Command",
-                "try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}\nWrite-Output ok"
+                "try { $utf8=New-Object System.Text.UTF8Encoding $false; [Console]::OutputEncoding=$utf8; $OutputEncoding=$utf8 } catch {}\nWrite-Output ok"
             ]
         );
 
@@ -71,5 +71,23 @@ mod tests {
             .expect("builder failed");
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("test_value"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn powershell_native_pipeline_uses_utf8() {
+        let shell = default_shell();
+        let command = r#"'定时任务' | & ([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) -NoProfile -Command '$stream=[Console]::OpenStandardInput(); $memory=New-Object IO.MemoryStream; $stream.CopyTo($memory); [BitConverter]::ToString($memory.ToArray()).Replace(''-'','''')'"#;
+
+        let output = shell_command_builder(&shell, command, false)
+            .output()
+            .await
+            .expect("PowerShell pipeline failed");
+
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "E5AE9AE697B6E4BBBBE58AA10D0A"
+        );
     }
 }

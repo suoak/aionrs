@@ -20,7 +20,7 @@ pub(crate) struct RetryPolicy {
     max_stream_retries: u32,
     initial_connect: bool,
     can_resign: bool,
-    initial_http_5xx: bool,
+    initial_response_retry: bool,
 }
 
 impl RetryPolicy {
@@ -28,13 +28,13 @@ impl RetryPolicy {
         max_stream_retries: u32,
         initial_connect: bool,
         can_resign: bool,
-        initial_http_5xx: bool,
+        initial_response_retry: bool,
     ) -> Self {
         Self {
             max_stream_retries,
             initial_connect,
             can_resign,
-            initial_http_5xx,
+            initial_response_retry,
         }
     }
 }
@@ -62,8 +62,8 @@ where
         }
     };
 
-    let response = if policy.initial_http_5xx {
-        crate::retry::with_initial_http_5xx_retry(send_initial).await?
+    let response = if policy.initial_response_retry {
+        crate::retry::with_initial_response_retry(send_initial).await?
     } else {
         send_initial().await?
     };
@@ -99,8 +99,8 @@ where
                     backoff = (backoff * 2).min(Duration::from_secs(15));
 
                     let resend = send.clone();
-                    let resend_result = if policy.initial_http_5xx {
-                        crate::retry::with_initial_http_5xx_retry(resend).await
+                    let resend_result = if policy.initial_response_retry {
+                        crate::retry::with_initial_response_retry(resend).await
                     } else {
                         resend().await
                     };

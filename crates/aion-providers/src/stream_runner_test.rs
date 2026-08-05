@@ -367,6 +367,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_run_stream_retries_initial_rate_limit_when_enabled() {
+        tokio::time::pause();
+
+        let send_count = Arc::new(AtomicU32::new(0));
+
+        let mut rx = run_stream(
+            {
+                let send_count = Arc::clone(&send_count);
+                move || {
+                    let send_count = Arc::clone(&send_count);
+                    async move {
+                        let attempt = send_count.fetch_add(1, Ordering::SeqCst);
+                        if attempt < 2 {
+                            Err(ProviderError::RateLimited {
+                                retry_after_ms: 5000,
+                                body: None,
+                            })
+                        } else {
+                            Ok(())
+                        }
+                    }
+                }
+            },
+            move |(), tx| async move {
+                tx.send(LlmEvent::TextDelta("connected".into())).await.unwrap();
+                StreamOutcome::Ok
+            },
+            RetryPolicy::new(2, false, true, true),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            rx.recv().await,
+            Some(LlmEvent::TextDelta(text)) if text == "connected"
+        ));
+        assert!(rx.recv().await.is_none());
+        assert_eq!(send_count.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
     async fn test_run_stream_does_not_retry_initial_5xx_when_disabled() {
         let send_count = Arc::new(AtomicU32::new(0));
 

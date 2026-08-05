@@ -275,7 +275,9 @@ fn user_shell_path() -> Option<PathBuf> {
 }
 
 fn prefix_powershell_script_with_utf8(command: &str) -> String {
-    format!("try {{ [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 }} catch {{}}\n{command}")
+    format!(
+        "try {{ $utf8=New-Object System.Text.UTF8Encoding $false; [Console]::OutputEncoding=$utf8; $OutputEncoding=$utf8 }} catch {{}}\n{command}"
+    )
 }
 
 #[cfg(test)]
