@@ -412,8 +412,8 @@ mod tests {
             Some("text/event-stream")
         );
         let body = response.text().await.expect("adapted SSE body should be readable");
-        assert!(body.contains(r#"\"delta\":"#));
-        assert!(body.contains(r#"\"content\":\"hello\""#));
+        assert!(body.contains(r#""delta":"#));
+        assert!(body.contains(r#""content":"hello""#));
         assert!(body.ends_with("data: [DONE]\n\n"));
     }
 
@@ -450,8 +450,8 @@ mod tests {
             .expect("a null error field must not fail a successful response");
 
         let body = response.text().await.expect("adapted SSE body should be readable");
-        assert!(body.contains(r#"\"delta\":"#));
-        assert!(body.contains(r#"\"content\":\"hello\""#));
+        assert!(body.contains(r#""delta":"#));
+        assert!(body.contains(r#""content":"hello""#));
         assert!(body.ends_with("data: [DONE]\n\n"));
     }
 
