@@ -228,6 +228,17 @@ mod tests {
         assert_eq!(counter.load(Ordering::SeqCst), 6);
     }
 
+    #[test]
+    fn retry_jitter_never_shortens_the_required_delay() {
+        let minimum = Duration::from_secs(20);
+
+        for _ in 0..100 {
+            let delay = retry_delay_with_jitter(minimum);
+            assert!(delay >= minimum);
+            assert!(delay <= Duration::from_secs(25));
+        }
+    }
+
     // --- backoff_sleep tests ---
 
     #[tokio::test]

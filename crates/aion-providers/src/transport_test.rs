@@ -267,6 +267,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn openai_transport_honors_retry_after_seconds() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(429)
+                    .insert_header("Retry-After", "17")
+                    .set_body_string("Too Many Requests"),
+            )
+            .mount(&server)
+            .await;
+        let transport = ProviderTransport::OpenAi(OpenAiTransport::new("test-key", &server.uri()));
+        let compat = ProviderCompat::openai_defaults();
+        let (body, tool_wire_shape) = transport
+            .project_body(&test_request(vec![]), &compat)
+            .expect("request body projection should succeed");
+        let request = transport
+            .build_projected_request("test-model", body, &compat, tool_wire_shape)
+            .expect("projected request should build");
+
+        let error = transport
+            .send(request)
+            .await
+            .expect_err("429 should map to rate limited");
+
+        assert!(matches!(
+            error,
+            ProviderError::RateLimited {
+                retry_after_ms: 17_000,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
     async fn openai_transport_maps_successful_json_502_to_api_error() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -339,7 +374,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn openai_transport_preserves_successful_json_response() {
+    async fn openai_transport_adapts_non_streaming_chat_completion_to_sse() {
         let server = MockServer::start().await;
         let response_body = json!({
             "choices": [{
@@ -367,15 +402,19 @@ mod tests {
         let response = transport
             .send(request)
             .await
-            .expect("successful JSON should remain a successful response");
+            .expect("successful JSON should be adapted");
 
         assert_eq!(
             response
-                .json::<Value>()
-                .await
-                .expect("preserved response should remain valid JSON"),
-            response_body
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/event-stream")
         );
+        let body = response.text().await.expect("adapted SSE body should be readable");
+        assert!(body.contains(r#"\"delta\":"#));
+        assert!(body.contains(r#"\"content\":\"hello\""#));
+        assert!(body.ends_with("data: [DONE]\n\n"));
     }
 
     #[tokio::test]
@@ -410,13 +449,10 @@ mod tests {
             .await
             .expect("a null error field must not fail a successful response");
 
-        assert_eq!(
-            response
-                .json::<Value>()
-                .await
-                .expect("preserved response should remain valid JSON"),
-            response_body
-        );
+        let body = response.text().await.expect("adapted SSE body should be readable");
+        assert!(body.contains(r#"\"delta\":"#));
+        assert!(body.contains(r#"\"content\":\"hello\""#));
+        assert!(body.ends_with("data: [DONE]\n\n"));
     }
 
     #[tokio::test]
@@ -702,5 +738,27 @@ mod tests {
             .send(request)
             .await
             .expect("successful response should pass through");
+    }
+
+    #[test]
+    fn retry_after_parser_rejects_malformed_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("not-a-delay"));
+
+        assert_eq!(parse_retry_after_ms(&headers), None);
+    }
+
+    #[test]
+    fn chat_completion_json_with_delta_is_recognized_without_rewriting() {
+        let mut body = json!({
+            "choices": [{
+                "delta": { "content": "hello" },
+                "finish_reason": "stop"
+            }]
+        });
+        let original = body.clone();
+
+        assert!(normalize_chat_completion_json(&mut body));
+        assert_eq!(body, original);
     }
 }

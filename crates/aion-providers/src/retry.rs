@@ -39,6 +39,7 @@ const INITIAL_RESPONSE_RETRY_BACKOFFS: [Duration; 5] = [
 const MAX_BACKOFF: Duration = Duration::from_secs(15);
 const INITIAL_CONNECT_BACKOFF: Duration = Duration::from_millis(300);
 const MAX_INITIAL_CONNECT_BACKOFF: Duration = Duration::from_secs(2);
+const RETRY_JITTER_DIVISOR: u128 = 4;
 
 /// Retry initial request failures that occur before an HTTP response exists.
 /// HTTP status errors and rate limits are intentionally not retried here.
@@ -89,6 +90,7 @@ where
                 let Some((reason, status, delay)) = initial_response_retry(&e, *backoff) else {
                     return Err(e);
                 };
+                let delay = retry_delay_with_jitter(delay);
                 tracing::warn!(
                     attempt = attempt + 1,
                     max_retries,
@@ -102,6 +104,16 @@ where
         }
     }
     f().await
+}
+
+fn retry_delay_with_jitter(minimum_delay: Duration) -> Duration {
+    let maximum_jitter_ms = minimum_delay.as_millis() / RETRY_JITTER_DIVISOR;
+    let maximum_jitter_ms = u64::try_from(maximum_jitter_ms).unwrap_or(u64::MAX);
+    if maximum_jitter_ms == 0 {
+        return minimum_delay;
+    }
+
+    minimum_delay.saturating_add(Duration::from_millis(fastrand::u64(0..=maximum_jitter_ms)))
 }
 
 fn initial_response_retry(error: &ProviderError, fallback_delay: Duration) -> Option<(&'static str, u16, Duration)> {

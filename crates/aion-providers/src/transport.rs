@@ -2,7 +2,7 @@ use aion_config::compat::{OpenAiApiMode, ProviderCompat};
 use aion_types::llm::LlmRequest;
 use futures::StreamExt;
 use reqwest::ResponseBuilderExt;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HeaderMap, HeaderValue, RETRY_AFTER};
 use serde_json::Value;
 
 use crate::bedrock::BedrockTransportState;
@@ -18,6 +18,7 @@ use crate::stream_runner::RetryPolicy;
 use crate::vertex::VertexTransportState;
 
 const MAX_JSON_ERROR_INSPECTION_BYTES: usize = 64 * 1024;
+const DEFAULT_RATE_LIMIT_RETRY_AFTER_MS: u64 = 5000;
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -290,14 +291,20 @@ async fn send_projected_json_request(
     };
 
     let status = response.status();
+    let retry_after_ms = parse_retry_after_ms(response.headers());
     if !status.is_success() {
         let body_text = response.text().await.unwrap_or_default();
-        return Err(map_common_status(status.as_u16(), body_text, tool_wire_shape));
+        return Err(map_common_status(
+            status.as_u16(),
+            body_text,
+            tool_wire_shape,
+            retry_after_ms,
+        ));
     }
 
     if is_json_response(&response) {
         let http_status = status.as_u16();
-        return inspect_success_json_response(response, http_status).await;
+        return inspect_success_json_response(response, http_status, retry_after_ms).await;
     }
 
     Ok(response)
@@ -318,6 +325,7 @@ fn is_json_response(response: &reqwest::Response) -> bool {
 async fn inspect_success_json_response(
     response: reqwest::Response,
     http_status: u16,
+    retry_after_ms: Option<u64>,
 ) -> Result<reqwest::Response, ProviderError> {
     let status = response.status();
     let version = response.version();
@@ -344,16 +352,29 @@ async fn inspect_success_json_response(
         body_bytes.extend_from_slice(&chunk);
     }
 
-    if let Ok(body) = serde_json::from_slice::<Value>(&body_bytes)
-        && let Some(error) = provider_error_from_json_body(&body, &body_bytes)
-    {
-        let provider_status = provider_error_status(&error);
-        tracing::warn!(
-            http_status,
-            provider_status,
-            "provider returned a JSON error with a successful HTTP status"
-        );
-        return Err(error);
+    if let Ok(mut body) = serde_json::from_slice::<Value>(&body_bytes) {
+        if let Some(error) = provider_error_from_json_body(&body, &body_bytes) {
+            let error = apply_retry_after(error, retry_after_ms);
+            let provider_status = provider_error_status(&error);
+            tracing::warn!(
+                http_status,
+                provider_status,
+                "provider returned a JSON error with a successful HTTP status"
+            );
+            return Err(error);
+        }
+
+        if normalize_chat_completion_json(&mut body) {
+            let mut sse_headers = headers;
+            sse_headers.remove(CONTENT_LENGTH);
+            sse_headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
+            let body = format!("data: {body}\n\ndata: [DONE]\n\n");
+            tracing::warn!(
+                http_status,
+                "provider returned a non-streaming chat completion to a streaming request; adapting response"
+            );
+            return rebuild_response(status, version, sse_headers, url, body);
+        }
     }
 
     rebuild_response(status, version, headers, url, body_bytes)
@@ -387,10 +408,15 @@ fn provider_error_status(error: &ProviderError) -> Option<u16> {
     }
 }
 
-fn map_common_status(status: u16, body_text: String, tool_wire_shape: ResolvedToolWireShape) -> ProviderError {
+fn map_common_status(
+    status: u16,
+    body_text: String,
+    tool_wire_shape: ResolvedToolWireShape,
+    retry_after_ms: Option<u64>,
+) -> ProviderError {
     if status == 429 {
         return ProviderError::RateLimited {
-            retry_after_ms: 5000,
+            retry_after_ms: retry_after_ms.unwrap_or(DEFAULT_RATE_LIMIT_RETRY_AFTER_MS),
             body: (!body_text.is_empty()).then_some(body_text),
         };
     }
@@ -403,6 +429,59 @@ fn map_common_status(status: u16, body_text: String, tool_wire_shape: ResolvedTo
         status,
         message: body_text,
     }
+}
+
+fn parse_retry_after_ms(headers: &HeaderMap) -> Option<u64> {
+    let value = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(seconds.saturating_mul(1000));
+    }
+
+    let retry_at = chrono::DateTime::parse_from_rfc2822(value)
+        .ok()?
+        .with_timezone(&chrono::Utc);
+    let delay = retry_at.signed_duration_since(chrono::Utc::now()).num_milliseconds();
+    Some(u64::try_from(delay.max(0)).unwrap_or(u64::MAX))
+}
+
+fn apply_retry_after(error: ProviderError, retry_after_ms: Option<u64>) -> ProviderError {
+    match (error, retry_after_ms) {
+        (ProviderError::RateLimited { body, .. }, Some(retry_after_ms)) => {
+            ProviderError::RateLimited { retry_after_ms, body }
+        }
+        (error, _) => error,
+    }
+}
+
+/// Convert a successful non-streaming Chat Completions envelope into the SSE
+/// shape requested by the caller. Some compatible gateways ignore
+/// `stream=true`; adapting their valid response is safer than treating EOF as
+/// a broken stream and resending the whole request.
+fn normalize_chat_completion_json(body: &mut Value) -> bool {
+    let Some(choices) = body.get_mut("choices").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    if choices.is_empty() {
+        return false;
+    }
+
+    let mut recognized = false;
+    for choice in choices {
+        if choice.get("delta").is_some() {
+            recognized = true;
+            continue;
+        }
+        let Some(message) = choice.get_mut("message").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        let delta = Value::Object(std::mem::take(message));
+        if let Some(choice) = choice.as_object_mut() {
+            choice.remove("message");
+            choice.insert("delta".to_owned(), delta);
+            recognized = true;
+        }
+    }
+    recognized
 }
 
 #[cfg(test)]
