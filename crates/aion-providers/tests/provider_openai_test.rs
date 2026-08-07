@@ -706,6 +706,7 @@ async fn test_aio_140_openai_tools_wire_shape_mismatch_error_is_readable_and_not
 /// Verify that a 429 response is surfaced as ProviderError::RateLimited.
 #[tokio::test]
 async fn test_openai_rate_limited() {
+    tokio::time::pause();
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))
