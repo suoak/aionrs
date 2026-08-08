@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.11](https://github.com/suoak/aionrs/compare/v0.2.10...v0.2.11) (2026-08-08)
+
+
+### Bug Fixes
+
+* **providers:** improve rate-limit and stream recovery ([#2](https://github.com/suoak/aionrs/issues/2)) ([28bf8cf](https://github.com/suoak/aionrs/commit/28bf8cf96a1cba06e91ba73b9f2b99ba87d5cacd))
+
 ## [0.2.10](https://github.com/suoak/aionrs/compare/v0.2.9...v0.2.10) (2026-08-05)
 
 
