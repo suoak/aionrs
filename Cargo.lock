@@ -182,6 +182,7 @@ dependencies = [
  "base64",
  "chrono",
  "dirs",
+ "fastrand",
  "futures",
  "http 1.4.0",
  "insta",

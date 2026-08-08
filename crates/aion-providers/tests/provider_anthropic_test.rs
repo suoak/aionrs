@@ -337,6 +337,7 @@ async fn test_aio_140_anthropic_tools_wire_shape_mismatch_error_is_readable_and_
 /// A 429 response from the API should produce a ProviderError::RateLimited.
 #[tokio::test]
 async fn test_anthropic_rate_limit_retryable() {
+    tokio::time::pause();
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))

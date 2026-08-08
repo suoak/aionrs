@@ -184,6 +184,42 @@ async fn test_openai_stream_text_response() {
     }
 }
 
+/// A compatible gateway may ignore `stream=true` and return a regular Chat
+/// Completions envelope. The provider must consume that valid answer once
+/// instead of classifying it as an empty stream and resending the request.
+#[tokio::test]
+async fn test_openai_adapts_non_streaming_json_response() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "chatcmpl-json-fallback",
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "message": { "role": "assistant", "content": "Fallback response" },
+                "finish_reason": "stop"
+            }],
+            "usage": { "prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12 }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = OpenAIProvider::new("test-key", &server.uri(), ProviderCompat::openai_defaults());
+    let events = collect_events(provider.stream(&make_request()).await.unwrap()).await;
+
+    assert_eq!(events.len(), 2);
+    assert!(matches!(&events[0], LlmEvent::TextDelta(text) if text == "Fallback response"));
+    assert!(matches!(
+        &events[1],
+        LlmEvent::Done {
+            stop_reason: StopReason::EndTurn,
+            ..
+        }
+    ));
+}
+
 #[tokio::test]
 async fn test_openai_responses_request_and_typed_stream() {
     let server = MockServer::start().await;
@@ -670,6 +706,7 @@ async fn test_aio_140_openai_tools_wire_shape_mismatch_error_is_readable_and_not
 /// Verify that a 429 response is surfaced as ProviderError::RateLimited.
 #[tokio::test]
 async fn test_openai_rate_limited() {
+    tokio::time::pause();
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))
