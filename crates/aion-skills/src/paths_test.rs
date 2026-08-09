@@ -79,10 +79,10 @@ mod tests {
         fs::create_dir(root.join(".git")).unwrap();
 
         // Create skills dirs at root and nested level
-        make_dir(root, ".aionrs/skills");
+        make_dir(root, ".csbu-workmate/skills");
         let nested = root.join("sub").join("project");
         fs::create_dir_all(&nested).unwrap();
-        make_dir(&nested, ".aionrs/skills");
+        make_dir(&nested, ".csbu-workmate/skills");
 
         let dirs = project_skills_dirs(&nested);
         // Should find both (deepest first)
@@ -90,6 +90,16 @@ mod tests {
         // First one is deeper (closest to cwd)
         assert!(dirs[0].starts_with(&nested));
         assert!(dirs[1].starts_with(root));
+    }
+
+    #[test]
+    fn test_project_skills_dirs_prefers_branded_path_and_keeps_legacy_compatibility() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir(tmp.path().join(".git")).unwrap();
+        let branded = make_dir(tmp.path(), ".csbu-workmate/skills");
+        let legacy = make_dir(tmp.path(), ".aionrs/skills");
+
+        assert_eq!(project_skills_dirs(tmp.path()), vec![branded, legacy]);
     }
 
     #[test]
@@ -106,9 +116,10 @@ mod tests {
     #[test]
     fn test_additional_skills_dirs_existing() {
         let tmp = TempDir::new().unwrap();
-        make_dir(tmp.path(), ".aionrs/skills");
+        make_dir(tmp.path(), ".csbu-workmate/skills");
         let result = additional_skills_dirs(&[tmp.path().to_path_buf()]);
         assert_eq!(result.len(), 1);
+        assert!(result[0].ends_with(".csbu-workmate/skills"));
     }
 
     #[test]
