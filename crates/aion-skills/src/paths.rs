@@ -2,6 +2,10 @@ use std::path::{Path, PathBuf};
 
 use aion_config::config::app_config_dir;
 
+/// Canonical branded project directory first, followed by the legacy directory.
+pub(crate) const PROJECT_SKILLS_DIRECTORY_NAMES: [&str; 2] = [".csbu-workmate", ".aionrs"];
+const LEGACY_PROJECT_DIRECTORY_NAME: &str = ".aionrs";
+
 // ---------------------------------------------------------------------------
 // User-level directories (<config_dir>/aionrs/)
 // ---------------------------------------------------------------------------
@@ -22,28 +26,33 @@ pub fn user_commands_dir() -> Option<PathBuf> {
 // Project-level directories (walk up from cwd)
 // ---------------------------------------------------------------------------
 
-/// Find all project-level `.aionrs/skills/` directories by walking up from
-/// `cwd` to the nearest git root (or home directory), returning deepest-first.
+/// Find project-level skill directories by walking up from `cwd` to the nearest
+/// git root (or home directory), returning deepest-first with the branded path
+/// before the legacy compatibility path at each level.
 ///
 /// Deepest-first means the most-specific project directory wins in the
 /// priority ordering (closer to cwd = higher priority).
 pub fn project_skills_dirs(cwd: &Path) -> Vec<PathBuf> {
-    walk_up_dirs(cwd, "skills")
+    walk_up_dirs(cwd, &PROJECT_SKILLS_DIRECTORY_NAMES, "skills")
 }
 
 /// Find all project-level `.aionrs/commands/` directories (legacy), same walk.
 pub fn project_commands_dirs(cwd: &Path) -> Vec<PathBuf> {
-    walk_up_dirs(cwd, "commands")
+    walk_up_dirs(cwd, &[LEGACY_PROJECT_DIRECTORY_NAME], "commands")
 }
 
 /// Resolve additional skill directories from `--add-dir` paths.
 ///
-/// Each path in `add_dirs` is checked for a `.aionrs/skills/` subdirectory.
-/// Only directories that exist are included.
+/// Each path in `add_dirs` is checked for branded and legacy skill directories.
+/// Only directories that exist are included, with the branded path first.
 pub fn additional_skills_dirs(add_dirs: &[PathBuf]) -> Vec<PathBuf> {
     add_dirs
         .iter()
-        .map(|d| d.join(".aionrs").join("skills"))
+        .flat_map(|dir| {
+            PROJECT_SKILLS_DIRECTORY_NAMES
+                .iter()
+                .map(move |name| dir.join(name).join("skills"))
+        })
         .filter(|p| p.is_dir())
         .collect()
 }
@@ -73,16 +82,19 @@ pub fn find_git_root(start: &Path) -> Option<PathBuf> {
 // ---------------------------------------------------------------------------
 
 /// Walk up from `cwd` to the git root (or home directory), collecting all
-/// `.aionrs/<subdir>/` directories that exist. Returns deepest-first.
-fn walk_up_dirs(cwd: &Path, subdir: &str) -> Vec<PathBuf> {
+/// Matching `<directory_name>/<subdir>/` directories that exist. Returns
+/// deepest-first while preserving `directory_names` priority at each level.
+fn walk_up_dirs(cwd: &Path, directory_names: &[&str], subdir: &str) -> Vec<PathBuf> {
     let stop_at = stop_boundary(cwd);
     let mut dirs = Vec::new();
     let mut current = cwd.to_path_buf();
 
     loop {
-        let candidate = current.join(".aionrs").join(subdir);
-        if candidate.is_dir() {
-            dirs.push(candidate);
+        for directory_name in directory_names {
+            let candidate = current.join(directory_name).join(subdir);
+            if candidate.is_dir() {
+                dirs.push(candidate);
+            }
         }
 
         // Stop if we've reached the boundary or the filesystem root

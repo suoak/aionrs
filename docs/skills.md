@@ -21,9 +21,10 @@ wins for duplicate names):
 
 | Priority | Path | Description |
 |----------|------|-------------|
-| 1 | `.aionrs/skills/` | Project-local skills (checked-in with the repo) |
-| 2 | `<CONFIG_DIR>/aionrs/skills/` | User-global skills (see below) |
-| 3 | `.aionrs/commands/` | Legacy flat `.md` files (backward compatibility) |
+| 1 | `.csbu-workmate/skills/` | Project-local skills (canonical branded path) |
+| 2 | `.aionrs/skills/` | Legacy project-local skills (backward compatibility) |
+| 3 | `<CONFIG_DIR>/aionrs/skills/` | User-global skills (see below) |
+| 4 | `.aionrs/commands/` | Legacy flat `.md` files (backward compatibility) |
 
 > **`<CONFIG_DIR>` by platform:**
 > - **macOS:** `~/Library/Application Support/`
@@ -36,7 +37,7 @@ Each skill is either a single `SKILL.md` file inside a named subdirectory, or
 a flat `.md` file in a `commands/` directory:
 
 ```
-.aionrs/skills/
+.csbu-workmate/skills/
 ├── deploy/
 │   └── SKILL.md          # invoked as "deploy"
 ├── review-pr/

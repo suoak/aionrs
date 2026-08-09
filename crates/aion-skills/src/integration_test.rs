@@ -478,6 +478,34 @@ async fn tc_e2e_10_multi_dir_dedup_first_wins() {
     );
 }
 
+#[tokio::test]
+async fn branded_project_skill_overrides_legacy_copy_with_the_same_name() {
+    use crate::loader::load_all_skills;
+
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir(tmp.path().join(".git")).unwrap();
+    let branded = tmp.path().join(".csbu-workmate").join("skills");
+    let legacy = tmp.path().join(".aionrs").join("skills");
+    write_skill_dir(
+        &branded,
+        "migration-check",
+        "---\ndescription: branded copy\n---\nbranded body",
+    );
+    write_skill_dir(
+        &legacy,
+        "migration-check",
+        "---\ndescription: legacy copy\n---\nlegacy body",
+    );
+
+    let skills = load_all_skills(tmp.path(), &[], false, None).await;
+    let skill = skills
+        .iter()
+        .find(|skill| skill.name == "migration-check")
+        .expect("migration-check skill should be loaded");
+
+    assert_eq!(skill.description, "branded copy");
+}
+
 // ---------------------------------------------------------------------------
 // TC-E2E-11: Legacy commands directory — flat .md files loaded as skills
 // AC-14: legacy command files from .aionrs/commands/ are loaded as SkillDefinition

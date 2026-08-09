@@ -2,13 +2,14 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::loader::{LoadedSkill, load_skills_from_dir};
+use crate::paths::PROJECT_SKILLS_DIRECTORY_NAMES;
 use crate::types::{LoadedFrom, SkillMetadata, SkillSource};
 
 // ---------------------------------------------------------------------------
 // Public manager
 // ---------------------------------------------------------------------------
 
-/// Manages runtime discovery of `.aionrs/skills/` directories found in
+/// Manages runtime discovery of branded and legacy skill directories found in
 /// subdirectories when the LLM operates on files.
 ///
 /// CWD-level skills are loaded at startup; this manager handles dynamically
@@ -39,7 +40,7 @@ impl RuntimeDiscovery {
         }
     }
 
-    /// Discover `.aionrs/skills/` directories by walking up from each file path to `cwd`.
+    /// Discover branded and legacy skill directories by walking up from each file path to `cwd`.
     ///
     /// Only discovers directories **below** `cwd` (cwd-level skills are loaded at
     /// startup). Already-checked directories are skipped to avoid redundant stat
@@ -76,24 +77,22 @@ impl RuntimeDiscovery {
                     break;
                 }
 
-                let skill_dir = current.join(".aionrs").join("skills");
+                for directory_name in PROJECT_SKILLS_DIRECTORY_NAMES {
+                    let skill_dir = current.join(directory_name).join("skills");
 
-                if !self.checked_dirs.contains(&skill_dir) {
-                    self.checked_dirs.insert(skill_dir.clone());
+                    if !self.checked_dirs.contains(&skill_dir) {
+                        self.checked_dirs.insert(skill_dir.clone());
 
-                    if tokio::fs::metadata(&skill_dir).await.is_ok() {
-                        // Check if the containing directory (currentDir = skill_dir's
-                        // grandparent) is gitignored. Aligns with TS L892 which passes
-                        // `currentDir` (not skillDir) to isPathGitignored (C4).
-                        let containing_dir = skill_dir
-                            .parent() // .aionrs/
-                            .and_then(|p| p.parent()) // currentDir
-                            .unwrap_or(&current);
+                        if tokio::fs::metadata(&skill_dir).await.is_ok() {
+                            // Check the project directory containing the runtime-owned
+                            // metadata directory, matching the original discovery contract.
+                            let containing_dir = skill_dir.parent().and_then(|p| p.parent()).unwrap_or(&current);
 
-                        if is_path_gitignored(containing_dir, resolved_cwd).await {
-                            tracing::debug!(target: "aion_skills", path = %skill_dir.display(), "skipping gitignored skills directory");
-                        } else {
-                            new_dirs.push(skill_dir);
+                            if is_path_gitignored(containing_dir, resolved_cwd).await {
+                                tracing::debug!(target: "aion_skills", path = %skill_dir.display(), "skipping gitignored skills directory");
+                            } else {
+                                new_dirs.push(skill_dir);
+                            }
                         }
                     }
                 }
@@ -170,13 +169,13 @@ impl RuntimeDiscovery {
     /// Clear dynamic skills (e.g., when reloading the skill set).
     ///
     /// `checked_dirs` is preserved to avoid redundant stat calls for directories
-    /// already known not to contain a `.aionrs/skills/` subdirectory.
+    /// already known not to contain a supported project skill directory.
     pub fn clear_dynamic_skills(&mut self) {
         self.dynamic_skills.clear();
     }
 
     /// Clear the set of directories that have already been checked for
-    /// `.aionrs/skills/` subdirectories.
+    /// supported project skill directories.
     ///
     /// Call this when a file-system watcher detects changes so that newly
     /// created directories (or directories that were previously absent) are
