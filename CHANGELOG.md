@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.12](https://github.com/suoak/aionrs/compare/v0.2.11...v0.2.12) (2026-08-09)
+
+
+### Features
+
+* **skills:** support branded project directory ([#4](https://github.com/suoak/aionrs/issues/4)) ([85682d7](https://github.com/suoak/aionrs/commit/85682d7eb75d333aaad8ee6971d8046be244a503))
+
 ## [0.2.11](https://github.com/suoak/aionrs/compare/v0.2.10...v0.2.11) (2026-08-08)
 
 
