@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.13](https://github.com/suoak/aionrs/compare/v0.2.12...v0.2.13) (2026-08-10)
+
+
+### Bug Fixes
+
+* **sync:** publish merged upstream fixes ([10d8941](https://github.com/suoak/aionrs/commit/10d89413490b2b35effdae908d92c57327c5cf92))
+
 ## [0.2.12](https://github.com/suoak/aionrs/compare/v0.2.11...v0.2.12) (2026-08-09)
 
 
