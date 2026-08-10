@@ -1,6 +1,6 @@
-# Built-in Tools
+# Bundled Tools
 
-The agent has 7 built-in tools. The LLM automatically selects and invokes them based on the task.
+The agent includes a core local tool suite and agent-level helpers. The LLM automatically selects and invokes them based on the task. MCP servers can add more tools at runtime.
 
 | Tool | Function | Concurrent |
 |------|----------|------------|
@@ -10,6 +10,7 @@ The agent has 7 built-in tools. The LLM automatically selects and invokes them b
 | **ExecCommand** | Execute shell commands | No |
 | **Grep** | Regex search file contents (via ripgrep) | Yes |
 | **Glob** | Find files by pattern matching | Yes |
+| **ViewImage** | Load a local JPEG, PNG, GIF, or WebP image for model inspection | Yes |
 | **Spawn** | Spawn sub-agents for parallel tasks | No |
 | **ToolSearch** | Load schemas for deferred tools | Yes |
 
@@ -61,17 +62,26 @@ Find files matching a glob pattern.
 - Results sorted by modification time (newest first)
 - Returns up to 100 files
 
+## ViewImage
+
+Load a supported local image and attach it to the next model turn.
+
+- Accepts an absolute file path
+- Supports JPEG, PNG, GIF, and WebP files up to 20 MB
+- Validates that the file content matches its extension
+
 ## Spawn
 
 See [Sub-Agent Spawning](advanced.md#sub-agent-spawning) in the Advanced Features guide.
 
 ## ToolSearch
 
-Load full schemas for deferred tools so the LLM can invoke them. Deferred tools (from MCP servers with `deferred = true`) are registered by name only — their parameter schemas are not loaded until the LLM calls ToolSearch.
+Load full schemas for deferred tools so the LLM can invoke them. Deferred bundled or MCP tools are registered without their full parameter schemas until the LLM calls ToolSearch.
 
-- Query by exact name: `"select:Read,Edit,Grep"`
-- Keyword search: `"slack send"` returns best matches
-- Returns up to 5 results by default
+- Search by tool name or a keyword from its description
+- Returns the full schemas of all matching deferred tools
+
+Skills are exposed through the **Skill** tool. When plan mode is enabled, **EnterPlanMode** and **ExitPlanMode** are also registered. See [Skills](skills.md) and [Plan Mode](advanced.md#plan-mode) for details.
 
 ---
 
@@ -86,7 +96,7 @@ User input → Build request (system prompt + history + tool definitions)
            → Output final reply → save session
 ```
 
-- Concurrent-safe tools (Read, Grep, Glob) execute in parallel
+- Concurrent-safe tools (Read, Grep, Glob, ViewImage) execute in parallel
 - Non-concurrent tools (Write, Edit, ExecCommand) execute sequentially
 - Tool output is auto-truncated to prevent context window overflow
 - Tool output can be compacted (see [Output Compaction](advanced.md#output-compaction))

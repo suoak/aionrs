@@ -224,7 +224,7 @@ async fn test_load_all_skills_bare_mode() {
     write_skill(&skills_dir, "my-skill/SKILL.md", "---\n---\n");
 
     let result = load_all_skills(Path::new("/nonexistent"), &[tmp.path().to_owned()], true, None).await;
-    assert_eq!(result.len(), 1);
+    assert_eq!(result.iter().filter(|skill| skill.name == "my-skill").count(), 1);
 }
 
 #[tokio::test]

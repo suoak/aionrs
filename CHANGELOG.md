@@ -20,6 +20,8 @@
 ### Bug Fixes
 
 * **runtime:** retry rate limits and preserve PowerShell UTF-8 ([540bcec](https://github.com/suoak/aionrs/commit/540bcec1012a220ad37f3b6cc98aea98cf4717b2))
+* **deps:** update rust crate getrandom-6f8ce4dd05d13bba to 0.4 ([#212](https://github.com/iOfficeAI/aionrs/issues/212)) ([ec435b9](https://github.com/iOfficeAI/aionrs/commit/ec435b9657b4946d2c418fe12377f7f41fe7a1d7))
+* **runtime:** retry rate limits and preserve PowerShell UTF-8 ([540bcec](https://github.com/suoak/aionrs/commit/540bcec1012a220ad37f3b6cc98aea98cf4717b2))
 
 ## [0.2.9](https://github.com/iOfficeAI/aionrs/compare/v0.2.8...v0.2.9) (2026-07-28)
 

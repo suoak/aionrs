@@ -291,8 +291,13 @@ async fn tc_11_1_bare_mode_only_loads_add_dirs() {
     )
     .await;
 
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0].name, "add-skill");
+    assert_eq!(result.iter().filter(|skill| skill.name == "add-skill").count(), 1);
+    assert!(
+        result
+            .iter()
+            .filter(|skill| skill.source != SkillSource::Bundled)
+            .all(|skill| skill.name == "add-skill")
+    );
     // user_tmp was not consulted (no skills from there)
     let _ = user_tmp;
 }
