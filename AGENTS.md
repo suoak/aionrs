@@ -6,7 +6,7 @@ Rules and conventions for AI assistants and contributors working on aionrs.
 
 aionrs is a **multi-provider AI agent CLI** written in Rust. It connects to
 LLM providers (Anthropic, OpenAI, AWS Bedrock, Google Vertex AI), orchestrates
-built-in tools (Read, Write, Edit, Bash, Grep, Glob, Spawn), supports MCP
+built-in tools (Read, Write, Edit, ExecCommand, Grep, Glob, ViewImage, Spawn), supports MCP
 servers, skills, hooks, and long-term memory. It also exposes a JSON stream
 protocol for host integration (e.g. Electron-based AionUI).
 
@@ -23,11 +23,11 @@ Dependencies flow **downward** — never introduce circular or upward references
 | Mid | `aion-config` | Configuration, ProviderCompat, auth, hooks, logging (`create_file_layer`), **cross-platform shell helpers** |
 | Mid | `aion-protocol` | JSON stream protocol (events, commands, approval manager) for host integration |
 | Mid | `aion-providers` | LLM provider implementations (Anthropic, OpenAI, Bedrock, Vertex) |
-| Mid | `aion-tools` | Built-in agent tools (Read, Write, Edit, Bash, Grep, Glob, Spawn) |
+| Mid | `aion-tools` | Local tools (Read, Write, Edit, ExecCommand, Grep, Glob, ViewImage, ToolSearch) |
 | Mid | `aion-mcp` | MCP (Model Context Protocol) client |
 | Mid | `aion-skills` | Skills system (prompt snippets, hooks, permissions, shell expansion) |
 | Mid | `aion-memory` | Long-term cross-session memory (user prefs, feedback, project context) |
-| Top | `aion-agent` | Agent engine, session management, orchestration |
+| Top | `aion-agent` | Agent engine, session management, orchestration, and agent-level tools such as Spawn |
 | Top | `aion-cli` | CLI binary entry point |
 
 When adding new functionality, place it in the **lowest crate where it

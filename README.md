@@ -6,8 +6,9 @@ A Rust-based LLM tool-use agent for the command line. It connects to LLM APIs, a
 
 - **Multi-provider** — Anthropic, OpenAI (and compatibles like DeepSeek/Ollama/Gemini), AWS Bedrock, Google Vertex AI
 - **ProviderCompat layer** — Configuration-driven compatibility for provider quirks (no hardcoded conditionals)
-- **Reasoning model support** — OpenAI `o1`/`o3` reasoning models with `reasoning_effort` control
-- **7 built-in tools** — Read, Write, Edit, Bash, Grep, Glob, Spawn (sub-agents)
+- **Reasoning model support** — Configurable thinking and reasoning effort for supported models
+- **Local tool suite** — Read, Write, Edit, ExecCommand, Grep, Glob, ViewImage, and Spawn (sub-agents), plus Skills, plan mode, and deferred tool discovery
+- **OpenAI Responses API** — Use either Chat Completions or Responses through the compatibility layer
 - **MCP client** — Connect to any [Model Context Protocol](https://modelcontextprotocol.io/) server (stdio / SSE / streamable-http)
 - **Dynamic MCP injection** — Host clients can inject MCP servers at runtime via the [JSON stream protocol](docs/json-stream-protocol.md)
 - **Skills** — Named prompt snippets with variable substitution, shell expansion, conditional activation, and per-skill model/permission overrides (see [docs/skills.md](docs/skills.md))
@@ -91,7 +92,7 @@ aionrs --max-tool-call-failure-turns 2 "Run the task"
 │  (3-level merge) │  streaming + tools    │  save / resume    │
 ├──────────────────┼───────────────────────┼───────────────────┤
 │  Providers       │  Tool Registry        │  Hook Executor    │
-│  ├ Anthropic     │  ├ Built-in (7)       │  ├ pre_tool_use   │
+│  ├ Anthropic     │  ├ Local + agent tools│  ├ pre_tool_use   │
 │  ├ OpenAI        │  ├ MCP tools (N)      │  ├ post_tool_use  │
 │  ├ Bedrock       │  └ Plan Mode tools    │  └ stop           │
 │  └ Vertex AI     │                       │                   │
@@ -111,7 +112,7 @@ aionrs --max-tool-call-failure-turns 2 "Run the task"
 | Document | Description |
 |----------|-------------|
 | [Getting Started](docs/getting-started.md) | Installation, CLI reference, configuration, usage examples |
-| [Built-in Tools](docs/tools.md) | Detailed reference for all 7 tools |
+| [Built-in Tools](docs/tools.md) | Detailed reference for bundled local and agent tools |
 | [MCP Integration](docs/mcp.md) | Model Context Protocol client setup and usage |
 | [Providers & Auth](docs/providers.md) | Multi-provider config, profiles, Bedrock, Vertex, OAuth |
 | [Advanced Features](docs/advanced.md) | Sub-agents, hooks, prompt caching, VCR, AGENTS.md |

@@ -2,7 +2,7 @@
 
 ## Overview
 
-MCP allows the agent to connect to external tool servers, extending beyond the 7 built-in tools to the entire MCP server ecosystem.
+MCP allows the agent to connect to external tool servers, extending the bundled tool suite with tools from the MCP server ecosystem.
 
 ## Configuring MCP Servers
 
