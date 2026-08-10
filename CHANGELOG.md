@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.12](https://github.com/suoak/aionrs/compare/v0.2.11...v0.2.12) (2026-08-09)
+
+
+### Features
+
+* **skills:** support branded project directory ([#4](https://github.com/suoak/aionrs/issues/4)) ([85682d7](https://github.com/suoak/aionrs/commit/85682d7eb75d333aaad8ee6971d8046be244a503))
+
+## [0.2.11](https://github.com/suoak/aionrs/compare/v0.2.10...v0.2.11) (2026-08-08)
+
+
+### Bug Fixes
+
+* **providers:** improve rate-limit and stream recovery ([#2](https://github.com/suoak/aionrs/issues/2)) ([28bf8cf](https://github.com/suoak/aionrs/commit/28bf8cf96a1cba06e91ba73b9f2b99ba87d5cacd))
+
 ## [0.2.10](https://github.com/suoak/aionrs/compare/v0.2.9...v0.2.10) (2026-08-05)
 
 
