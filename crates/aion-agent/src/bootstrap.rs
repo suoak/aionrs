@@ -63,6 +63,7 @@ pub struct AgentBootstrap {
     config: Config,
     workspace: PathBuf,
     extra_skill_dirs: Vec<PathBuf>,
+    isolate_skill_dirs: bool,
 
     // Output integration.
     output: Arc<dyn OutputSink>,
@@ -104,6 +105,7 @@ impl AgentBootstrap {
             config,
             workspace: PathBuf::from(workspace.into()),
             extra_skill_dirs: Vec::new(),
+            isolate_skill_dirs: false,
             output,
             provider: None,
             resume_session: None,
@@ -139,6 +141,16 @@ impl AgentBootstrap {
     /// Add extra directories to scan for skills.
     pub fn extra_skill_dirs(mut self, dirs: Vec<PathBuf>) -> Self {
         self.extra_skill_dirs = dirs;
+        self
+    }
+
+    /// Discover skills only from the supplied directories and bundled skills.
+    ///
+    /// Each directory is interpreted as a project root containing
+    /// `.aionrs/skills`.
+    pub fn isolated_skill_dirs(mut self, dirs: Vec<PathBuf>) -> Self {
+        self.extra_skill_dirs = dirs;
+        self.isolate_skill_dirs = true;
         self
     }
 
@@ -269,7 +281,7 @@ impl AgentBootstrap {
     }
 
     async fn load_skills(&self, workspace: &Path, mcp_manager: Option<&McpManager>) -> Vec<SkillMetadata> {
-        load_all_skills(workspace, &self.extra_skill_dirs, false, mcp_manager).await
+        load_all_skills(workspace, &self.extra_skill_dirs, self.isolate_skill_dirs, mcp_manager).await
     }
 
     fn configure_system_prompt(&mut self, environment: &BootstrapEnvironment, skills: &[SkillMetadata]) -> PromptUsage {
