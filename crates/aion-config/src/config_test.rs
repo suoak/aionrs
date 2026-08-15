@@ -1685,4 +1685,57 @@ max_tokens_field = "max_tokens"
         );
         assert_eq!(config.compat.max_tokens_field(), "max_tokens");
     }
+
+    // -------------------------------------------------------------------------
+    // compact context_window resolution from the per-model catalog
+    // -------------------------------------------------------------------------
+
+    fn cli_args_for(tmp: &tempfile::TempDir, model: Option<&str>) -> CliArgs {
+        CliArgs {
+            provider: Some("openai".into()),
+            api_key: Some("test-key".into()),
+            base_url: Some("https://api.kimi.com/coding/v1".into()),
+            model: model.map(|m| m.into()),
+            max_tokens: None,
+            thinking: None,
+            thinking_budget: None,
+            max_turns: None,
+            max_tool_call_malformed_turns: None,
+            max_tool_call_failure_turns: None,
+            system_prompt: None,
+            profile: None,
+            auto_approve: false,
+            project_dir: Some(tmp.path().to_path_buf()),
+        }
+    }
+
+    #[test]
+    fn test_compact_context_window_defaults_from_model_catalog() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // No [compact] section anywhere: the catalog sizes the window from
+        // the resolved model instead of the 200K fallback.
+        let config = Config::resolve(&cli_args_for(&tmp, Some("kimi-for-coding"))).unwrap();
+        assert_eq!(config.compact.context_window, 262_144);
+
+        // Unknown model keeps the global default.
+        let config = Config::resolve(&cli_args_for(&tmp, Some("unknown-model-xyz"))).unwrap();
+        assert_eq!(config.compact.context_window, 200_000);
+    }
+
+    #[test]
+    fn test_compact_context_window_explicit_config_wins_over_catalog() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(".aionrs.toml"),
+            r#"
+[compact]
+context_window = 99999
+"#,
+        )
+        .unwrap();
+
+        let config = Config::resolve(&cli_args_for(&tmp, Some("kimi-for-coding"))).unwrap();
+        assert_eq!(config.compact.context_window, 99_999);
+    }
 }

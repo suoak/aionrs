@@ -418,6 +418,17 @@ impl Config {
         let compat = ProviderCompat::merge(compat_defaults, user_compat);
         let thinking = resolve_cli_thinking(cli.thinking.as_deref(), cli.thinking_budget)?;
 
+        // Compact: when the user has not set `context_window` explicitly
+        // (still the global default), size it from the per-model catalog so
+        // that autocompact thresholds reflect the real model window rather
+        // than the 200K fallback. An explicit `context_window` always wins.
+        let mut compact = merged.compact;
+        if compact.context_window == CompactConfig::default().context_window
+            && let Some(window) = compat.context_window_for_model(&model)
+        {
+            compact.context_window = window;
+        }
+
         Ok(Config {
             provider_label,
             provider,
@@ -434,7 +445,7 @@ impl Config {
             compat,
             tools,
             session: merged.session,
-            compact: merged.compact,
+            compact,
             plan: merged.plan,
             shell: merged.shell,
             file_cache: merged.file_cache,

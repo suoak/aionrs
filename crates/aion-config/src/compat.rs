@@ -46,6 +46,12 @@ pub struct TransportCompat {
     /// The first matching pattern wins.
     pub model_max_tokens: Option<Vec<ModelMaxTokensRule>>,
 
+    /// Model substring rules for the input context window size.
+    /// Used to size `[compact] context_window` when the user has not set it
+    /// explicitly. The first matching pattern wins.
+    /// Default: None (fall back to the global compact default).
+    pub model_context_window: Option<Vec<ModelContextWindowRule>>,
+
     /// Custom API path appended to base_url for chat completions.
     /// Default: "/chat/completions" for OpenAI-compatible providers.
     pub api_path: Option<String>,
@@ -63,6 +69,16 @@ pub struct TransportCompat {
 pub struct ModelMaxTokensRule {
     pub pattern: String,
     pub max_tokens: u32,
+}
+
+/// Model substring rule for the *input* context window, mirroring
+/// [`ModelMaxTokensRule`] (which covers output budget only). The first
+/// matching pattern wins; patterns are normalized (lowercase, `.` → `-`)
+/// before matching, exactly like `model_max_tokens`.
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
+pub struct ModelContextWindowRule {
+    pub pattern: String,
+    pub context_window: usize,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -158,6 +174,7 @@ impl TransportCompat {
             max_tokens_field: user.max_tokens_field.or(defaults.max_tokens_field),
             default_max_tokens: user.default_max_tokens.or(defaults.default_max_tokens),
             model_max_tokens: user.model_max_tokens.or(defaults.model_max_tokens),
+            model_context_window: user.model_context_window.or(defaults.model_context_window),
             api_path: user.api_path.or(defaults.api_path),
             max_request_body_bytes: user.max_request_body_bytes.or(defaults.max_request_body_bytes),
             include_stream_options: user.include_stream_options.or(defaults.include_stream_options),
@@ -226,6 +243,7 @@ impl ProviderCompat {
             transport: TransportCompat {
                 default_max_tokens: Some(128_000),
                 model_max_tokens: Some(anthropic_model_max_tokens_rules()),
+                model_context_window: Some(anthropic_model_context_window_rules()),
                 ..Default::default()
             },
             messages: MessageCompat {
@@ -254,6 +272,7 @@ impl ProviderCompat {
             transport: TransportCompat {
                 default_max_tokens: Some(128_000),
                 model_max_tokens: Some(anthropic_model_max_tokens_rules()),
+                model_context_window: Some(anthropic_model_context_window_rules()),
                 ..Default::default()
             },
             messages: MessageCompat {
@@ -287,6 +306,7 @@ impl ProviderCompat {
                 max_tokens_field: Some("max_tokens".into()),
                 api_path: Some("/chat/completions".into()),
                 include_stream_options: Some(true),
+                model_context_window: Some(openai_model_context_window_rules()),
                 ..Default::default()
             },
             messages: MessageCompat {
@@ -378,6 +398,19 @@ impl ProviderCompat {
                 })
             })
             .or(self.transport.default_max_tokens)
+    }
+
+    /// Resolve the input context window for the concrete model from
+    /// per-model rules. Returns `None` when no rule matches, letting callers
+    /// fall back to the global `[compact] context_window` default.
+    pub fn context_window_for_model(&self, model: &str) -> Option<usize> {
+        let normalized = normalize_model_pattern(model);
+        self.transport.model_context_window.as_deref().and_then(|rules| {
+            rules.iter().find_map(|rule| {
+                let pattern = normalize_model_pattern(&rule.pattern);
+                normalized.contains(&pattern).then_some(rule.context_window)
+            })
+        })
     }
 
     pub fn max_request_body_bytes(&self) -> Option<usize> {
@@ -482,6 +515,53 @@ fn anthropic_model_max_tokens_rules() -> Vec<ModelMaxTokensRule> {
     .map(|(pattern, max_tokens)| ModelMaxTokensRule {
         pattern: pattern.to_string(),
         max_tokens,
+    })
+    .collect()
+}
+
+/// Anthropic-family context window rules. Modern Claude models all expose a
+/// 200K window; the beta 1M-window variants are matched first.
+fn anthropic_model_context_window_rules() -> Vec<ModelContextWindowRule> {
+    [("claude", 200_000)]
+        .into_iter()
+        .map(|(pattern, context_window)| ModelContextWindowRule {
+            pattern: pattern.to_string(),
+            context_window,
+        })
+        .collect()
+}
+
+/// OpenAI-compatible context window rules.
+///
+/// This preset also serves third-party OpenAI-compatible endpoints (Kimi,
+/// Moonshot, DeepSeek, Qwen, MiniMax…), whose windows differ widely from
+/// OpenAI's. Ordering matters: the most specific patterns come first.
+fn openai_model_context_window_rules() -> Vec<ModelContextWindowRule> {
+    [
+        // Moonshot / Kimi
+        ("kimi-for-coding", 262_144),
+        ("kimi-k2", 131_072),
+        ("kimi", 131_072),
+        ("moonshot", 131_072),
+        // DeepSeek
+        ("deepseek", 131_072),
+        // MiniMax
+        ("minimax", 204_800),
+        // Qwen
+        ("qwen3", 131_072),
+        ("qwen", 131_072),
+        // OpenAI official families (when the preset is reused for compatible endpoints)
+        ("gpt-5", 272_000),
+        ("gpt-4-1", 1_047_576),
+        ("gpt-4o", 128_000),
+        ("o1", 200_000),
+        ("o3", 200_000),
+        ("o4", 200_000),
+    ]
+    .into_iter()
+    .map(|(pattern, context_window)| ModelContextWindowRule {
+        pattern: pattern.to_string(),
+        context_window,
     })
     .collect()
 }
