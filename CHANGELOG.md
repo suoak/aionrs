@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.14](https://github.com/suoak/aionrs/compare/v0.2.13...v0.2.14) (2026-08-15)
+
+
+### Features
+
+* **agent:** stamp per-run turn ids onto conversation messages ([5889110](https://github.com/suoak/aionrs/commit/5889110ce376d7e53ce2884147d892b32f2d72ac))
+* **session:** add session forking with lineage and turn-anchored boundaries ([df1cf85](https://github.com/suoak/aionrs/commit/df1cf851ae6fc106cb7b0836d4d31065e9415ba9))
+* **session:** support session forking with turn-anchored boundaries ([a48be3b](https://github.com/suoak/aionrs/commit/a48be3be6d551a88a8896da7e5bd39f5d0db6c83))
+* **tui:** add codex-style interactive repl ([f00f0fb](https://github.com/suoak/aionrs/commit/f00f0fbc15842cf5a4443ee92d5f7269d4cb516f))
+* **tui:** add interactive repl interface ([4ffa967](https://github.com/suoak/aionrs/commit/4ffa967b26a0b479113cfdfc2cda94d510ee4640))
+* **tui:** complete codex-style repl workflow ([6a91939](https://github.com/suoak/aionrs/commit/6a91939164b0afa079eb9289a46511bb3b12146f))
+
+
+### Bug Fixes
+
+* **cli:** stabilize tool context and terminal rendering ([a5df989](https://github.com/suoak/aionrs/commit/a5df989d110fb424bcd496b413e7ce7e20754414))
+* **cli:** stabilize tool context and terminal rendering ([5bc0031](https://github.com/suoak/aionrs/commit/5bc003166411310817e47df54d42894db14f86ca))
+* **tui:** rebuild scrollback without duplicate rendering ([5a4aa9e](https://github.com/suoak/aionrs/commit/5a4aa9e5564e3c2e84fb6e28110c242a9d365bcb))
+
 ## [0.2.13](https://github.com/suoak/aionrs/compare/v0.2.12...v0.2.13) (2026-08-10)
 
 
