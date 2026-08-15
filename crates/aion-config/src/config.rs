@@ -426,6 +426,12 @@ impl Config {
         if compact.context_window == CompactConfig::default().context_window
             && let Some(window) = compat.context_window_for_model(&model)
         {
+            tracing::debug!(
+                target: "aion_config",
+                model = %model,
+                context_window = window,
+                "compact context_window resolved from per-model catalog"
+            );
             compact.context_window = window;
         }
 
