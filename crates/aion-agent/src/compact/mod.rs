@@ -1,7 +1,8 @@
-//! Multi-level context compaction for long conversations.
+//! Context compaction guards for long conversations.
 //!
-//! Three levels, from lightest to heaviest:
-//! - **Microcompact**: clears old tool result content (no LLM call)
+//! Model-facing tool results are bounded once before entering history. The
+//! remaining guards, from lightest to heaviest, are:
+//! - **Legacy microcompact**: optionally clears old tool result content
 //! - **Autocompact**: context-threshold-triggered LLM summarization
 //! - **Emergency**: blocks API calls when near the context window limit
 

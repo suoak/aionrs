@@ -26,6 +26,7 @@ mod tests {
         assert_eq!(session.cwd, "/tmp");
         assert!(session.messages.is_empty());
         assert!(manager.state_path(&session.id).is_file());
+        assert!(!manager.nested_state_path(&session.id).exists());
         assert!(!dir.path().join("index.json").exists());
 
         let state_json: serde_json::Value =
@@ -150,6 +151,25 @@ mod tests {
     }
 
     #[test]
+    fn test_load_nested_current_layout_migrates_to_flat_layout() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
+        let session = sample_session("nested-session", "nested model");
+        let nested_path = manager.nested_state_path(&session.id);
+        fs::create_dir_all(nested_path.parent().unwrap()).unwrap();
+        fs::write(&nested_path, serde_json::to_string_pretty(&session).unwrap()).unwrap();
+
+        let listed = manager.list().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, session.id);
+
+        let loaded = manager.load(&session.id).unwrap();
+        assert_eq!(loaded.model, "nested model");
+        assert!(manager.state_path(&session.id).is_file());
+        assert!(nested_path.is_file());
+    }
+
+    #[test]
     fn test_list_merges_legacy_and_current_sessions() {
         let dir = tempdir().unwrap();
         let manager = SessionManager::new(dir.path().to_path_buf(), 10);
@@ -267,6 +287,23 @@ mod tests {
     }
 
     #[test]
+    fn test_cleanup_removes_old_nested_current_layout() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 1);
+        let old = sample_session("old-nested-session", "old model");
+        let old_path = manager.nested_state_path(&old.id);
+        fs::create_dir_all(old_path.parent().unwrap()).unwrap();
+        fs::write(&old_path, serde_json::to_string_pretty(&old).unwrap()).unwrap();
+
+        manager
+            .create("openai", "new model", "/tmp", Some("new-session"))
+            .unwrap();
+
+        assert!(!old_path.exists());
+        assert!(manager.state_path("new-session").is_file());
+    }
+
+    #[test]
     fn test_session_id_is_uuid_v7() {
         let id1 = generate_session_id();
         let id2 = generate_session_id();
@@ -322,9 +359,176 @@ mod tests {
         assert!(manager.state_path("same-session").is_file());
     }
 
+    #[test]
+    fn test_fork_copies_history_into_new_session_with_lineage() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
+        let mut source = sample_session("source-a", "model-x");
+        source.messages.push(Message::new(
+            Role::Assistant,
+            vec![ContentBlock::Text {
+                text: "reply".to_string(),
+            }],
+        ));
+        manager.save(&source).unwrap();
+
+        let fork = manager.fork("source-a", None).unwrap();
+
+        assert_ne!(fork.id, source.id);
+        assert_eq!(fork.forked_from.as_deref(), Some("source-a"));
+        assert_eq!(fork.root_id.as_deref(), Some("source-a"));
+        assert_eq!(fork.messages.len(), source.messages.len());
+        assert_eq!(fork.provider, source.provider);
+        assert_eq!(fork.model, source.model);
+        assert!(fork.created_at > source.created_at);
+        // The fork is persisted and independently loadable.
+        let loaded = manager.load(&fork.id).unwrap();
+        assert_eq!(loaded.messages.len(), source.messages.len());
+        assert_eq!(loaded.forked_from.as_deref(), Some("source-a"));
+    }
+
+    #[test]
+    fn test_fork_does_not_mutate_source_session() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
+        let source = sample_session("source-b", "model-x");
+        manager.save(&source).unwrap();
+        let source_bytes_before = fs::read_to_string(manager.state_path("source-b")).unwrap();
+
+        let fork = manager.fork("source-b", None).unwrap();
+
+        let source_bytes_after = fs::read_to_string(manager.state_path("source-b")).unwrap();
+        assert_eq!(source_bytes_before, source_bytes_after);
+        // Diverging the fork afterwards still leaves the source untouched.
+        let mut fork = fork;
+        fork.messages.push(Message::new(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "new branch message".to_string(),
+            }],
+        ));
+        manager.save(&fork).unwrap();
+        let reloaded_source = manager.load("source-b").unwrap();
+        assert_eq!(reloaded_source.messages.len(), source.messages.len());
+        assert!(reloaded_source.forked_from.is_none());
+    }
+
+    #[test]
+    fn test_fork_with_custom_id_and_collision_bails() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
+        manager.save(&sample_session("source-c", "model-x")).unwrap();
+
+        let fork = manager.fork("source-c", Some("custom-fork-id")).unwrap();
+        assert_eq!(fork.id, "custom-fork-id");
+        assert!(manager.state_path("custom-fork-id").is_file());
+
+        // Forking into an id that already exists (including the source
+        // itself) must fail without touching the existing session.
+        let err = manager.fork("source-c", Some("custom-fork-id")).unwrap_err();
+        assert!(err.to_string().contains("already exists"), "unexpected error: {err}");
+        let err = manager.fork("source-c", Some("source-c")).unwrap_err();
+        assert!(err.to_string().contains("already exists"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn test_fork_of_fork_keeps_original_root() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
+        manager.save(&sample_session("root-session", "model-x")).unwrap();
+
+        let first = manager.fork("root-session", None).unwrap();
+        let second = manager.fork(&first.id, None).unwrap();
+
+        assert_eq!(second.forked_from.as_deref(), Some(first.id.as_str()));
+        assert_eq!(second.root_id.as_deref(), Some("root-session"));
+        assert_eq!(first.root_id.as_deref(), Some("root-session"));
+    }
+
+    #[test]
+    fn test_fork_at_turn_truncates_through_anchor_inclusive() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
+        let mut source = sample_session("turn-source", "model-x");
+        source.messages.clear();
+        for (turn, text) in [
+            (Some("turn-1"), "u1"),
+            (Some("turn-1"), "a1"),
+            (Some("turn-2"), "u2"),
+            (Some("turn-2"), "a2"),
+            (Some("turn-3"), "u3"),
+        ] {
+            let mut m = Message::now(Role::User, vec![ContentBlock::Text { text: text.into() }]);
+            m.turn_id = turn.map(str::to_owned);
+            source.messages.push(m);
+        }
+        manager.save(&source).unwrap();
+
+        let fork = manager
+            .fork_from(&source, None, ForkBoundary::AtTurn("turn-2"))
+            .unwrap();
+
+        assert_eq!(fork.messages.len(), 4, "cut after the LAST turn-2 message, inclusive");
+        assert_eq!(fork.messages.last().unwrap().turn_id.as_deref(), Some("turn-2"));
+        // Source untouched.
+        assert_eq!(manager.load("turn-source").unwrap().messages.len(), 5);
+    }
+
+    #[test]
+    fn test_fork_at_unknown_anchor_is_refused_not_degraded() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
+        // sample_session's message carries no turn_id — the shape of
+        // pre-turn-tracking history or a compacted-away turn.
+        let source = sample_session("turn-source-2", "model-x");
+        manager.save(&source).unwrap();
+
+        let err = manager
+            .fork_from(&source, Some("should-not-exist"), ForkBoundary::AtTurn("turn-9"))
+            .unwrap_err();
+        assert!(err.to_string().contains("not found"), "unexpected error: {err}");
+        // Refusal must not leave a partial fork behind.
+        assert!(manager.load("should-not-exist").is_err());
+    }
+
+    #[test]
+    fn test_fork_nonexistent_source_errors() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
+
+        assert!(manager.fork("no-such-session", None).is_err());
+    }
+
+    #[test]
+    fn test_session_without_lineage_fields_deserializes_as_root() {
+        let mut value = serde_json::to_value(sample_session("pre-fork-format", "old-model")).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.remove("forked_from");
+        obj.remove("root_id");
+
+        let loaded: Session = serde_json::from_value(value).unwrap();
+
+        assert!(loaded.forked_from.is_none());
+        assert!(loaded.root_id.is_none());
+    }
+
+    #[test]
+    fn test_non_fork_session_serializes_without_lineage_keys() {
+        let dir = tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
+        let session = manager.create("openai", "gpt-4", "/tmp", None).unwrap();
+
+        let state_json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(manager.state_path(&session.id)).unwrap()).unwrap();
+        assert!(state_json.get("forked_from").is_none());
+        assert!(state_json.get("root_id").is_none());
+    }
+
     fn sample_session(id: &str, model: &str) -> Session {
         Session {
             id: id.to_string(),
+            forked_from: None,
+            root_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             provider: "test-provider".to_string(),

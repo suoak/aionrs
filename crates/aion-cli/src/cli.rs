@@ -81,6 +81,11 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) session_id: Option<String>,
 
+    /// With --resume: fork the session into a new session id instead of
+    /// continuing the original (the source session is left untouched)
+    #[arg(long, requires = "resume")]
+    pub(crate) fork_session: bool,
+
     // --- Output ---
     /// Disable colored output
     #[arg(long)]

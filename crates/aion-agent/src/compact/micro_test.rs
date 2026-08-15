@@ -42,6 +42,7 @@ mod tests {
             role: Role::Assistant,
             content: blocks,
             timestamp: Some(ts),
+            turn_id: None,
         }
     }
 

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::cache_diagnostics::{CacheBreakDetector, CacheDiagnostic, CacheStats};
-use crate::commands::{CommandContext, CommandRegistry, CommandResult, SlashCommand, default_registry};
+use crate::commands::{CommandContext, CommandRegistry, CommandResult, CommandSpec, SlashCommand, default_registry};
 use crate::compact::auto::{CompactError, autocompact, should_autocompact};
 use crate::compact::emergency::is_at_emergency_limit;
 use crate::compact::estimate::{estimate_tokens_from_tool_image, estimate_tokens_from_tool_result};
@@ -16,7 +16,9 @@ use crate::context_usage::{
     estimate_tool_definitions_tokens,
 };
 use crate::error::AgentError;
-use crate::orchestration::{ExecutionControl, execute_tool_calls, execute_tool_calls_with_approval};
+use crate::orchestration::{
+    ExecutionControl, execute_tool_calls_with_approval_and_output_limit, execute_tool_calls_with_output_limit,
+};
 use crate::output::OutputSink;
 use crate::plan::prompt::plan_mode_instructions;
 use crate::plan::state::PlanState;
@@ -48,6 +50,7 @@ use chrono::Utc;
 use serde_json::to_string;
 use tokio::sync::mpsc::Receiver;
 use tracing::{Instrument, debug, error, info, info_span, warn};
+use uuid::Uuid;
 
 #[derive(Debug)]
 pub struct AgentResult {
@@ -86,6 +89,14 @@ pub struct AgentEngine {
     total_usage: TokenUsage,
     /// Output message ID for the currently streaming run.
     msg_id: String,
+    /// Turn id for the NEXT run, supplied by the host (e.g. AionCore passes
+    /// its conversation-layer turn id so DB rows and session messages share
+    /// one anchor). Consumed by `run_inner`; when absent a fresh id is minted.
+    pending_turn_id: Option<String>,
+    /// Turn id of the current (or most recently finished) run. Stamped on
+    /// every message appended via `push_history`, including late
+    /// `abort_current_turn` tool results.
+    current_turn_id: Option<String>,
     /// Maximum output tokens requested from the provider per turn.
     max_tokens: Option<u32>,
     /// Optional cap on counted model turns within a single run.
@@ -199,6 +210,8 @@ impl AgentEngine {
             messages: Vec::new(),
             total_usage: TokenUsage::default(),
             msg_id: String::new(),
+            pending_turn_id: None,
+            current_turn_id: None,
             max_turns_per_run: config.max_turns,
             max_tool_call_malformed_turns: config
                 .max_tool_call_malformed_turns
@@ -294,6 +307,8 @@ impl AgentEngine {
             messages: session.messages.clone(),
             total_usage: session.total_usage.clone(),
             msg_id: String::new(),
+            pending_turn_id: None,
+            current_turn_id: None,
             max_turns_per_run: config.max_turns,
             max_tool_call_malformed_turns: config
                 .max_tool_call_malformed_turns
@@ -383,6 +398,11 @@ impl AgentEngine {
         }
     }
 
+    /// Return the model-visible skills loaded for this engine runtime.
+    pub fn skill_names(&self) -> &[String] {
+        &self.prompt_usage.skills
+    }
+
     /// Get a reference to the output sink
     pub fn output(&self) -> &dyn OutputSink {
         self.output.as_ref()
@@ -459,12 +479,37 @@ impl AgentEngine {
         self.run_inner(content_blocks, msg_id).instrument(span).await
     }
 
+    /// Set the turn id for the NEXT run. Hosts that mint their own turn ids
+    /// (e.g. AionCore) pass them in so the session-side anchor matches their
+    /// message store; without a pending id the engine mints one per run.
+    pub fn set_next_turn_id(&mut self, turn_id: Option<String>) {
+        self.pending_turn_id = turn_id;
+    }
+
+    /// Turn id of the current (or most recently finished) run.
+    pub fn current_turn_id(&self) -> Option<&str> {
+        self.current_turn_id.as_deref()
+    }
+
+    /// Append a message to the conversation history, stamped with the
+    /// current run's turn id (the session-side fork anchor).
+    fn push_history(&mut self, role: Role, content: Vec<ContentBlock>) {
+        let mut message = Message::now(role, content);
+        message.turn_id = self.current_turn_id.clone();
+        self.messages.push(message);
+    }
+
     async fn run_inner(&mut self, content_blocks: Vec<ContentBlock>, msg_id: &str) -> Result<AgentResult, AgentError> {
         self.msg_id = msg_id.to_string();
+        self.current_turn_id = Some(
+            self.pending_turn_id
+                .take()
+                .unwrap_or_else(|| Uuid::now_v7().to_string()),
+        );
         self.output.emit_stream_start(msg_id);
 
         let user_tokens = estimate_content_tokens(&content_blocks);
-        self.messages.push(Message::now(Role::User, content_blocks));
+        self.push_history(Role::User, content_blocks);
         self.record_local_context_addition(user_tokens);
         self.save_session();
 
@@ -495,13 +540,13 @@ impl AgentEngine {
             let tool_calls = match TurnOutcome::from_stream(outcome) {
                 TurnOutcome::ToolRound(outcome) => {
                     let assistant_content = build_assistant_content(&outcome);
-                    self.messages.push(Message::now(Role::Assistant, assistant_content));
+                    self.push_history(Role::Assistant, assistant_content);
                     self.save_session();
                     outcome.tool_calls
                 }
                 TurnOutcome::Final(outcome) => {
                     let assistant_content = build_assistant_content(&outcome);
-                    self.messages.push(Message::now(Role::Assistant, assistant_content));
+                    self.push_history(Role::Assistant, assistant_content);
                     self.save_session();
                     return Ok(AgentResult {
                         text: outcome.assistant_text,
@@ -512,7 +557,7 @@ impl AgentEngine {
                 }
                 TurnOutcome::Truncated(outcome) => {
                     let assistant_content = build_assistant_content(&outcome);
-                    self.messages.push(Message::now(Role::Assistant, assistant_content));
+                    self.push_history(Role::Assistant, assistant_content);
                     self.save_session();
                     return self
                         .finalize_once(
@@ -553,7 +598,7 @@ impl AgentEngine {
                         text: EMPTY_FINAL_RETRY_PROMPT.to_string(),
                     }];
                     self.record_local_context_addition(estimate_content_tokens(&retry_blocks));
-                    self.messages.push(Message::now(Role::User, retry_blocks));
+                    self.push_history(Role::User, retry_blocks);
                     self.save_session();
                     continue;
                 }
@@ -584,9 +629,9 @@ impl AgentEngine {
             self.emit_tool_results(&tool_calls, &tool_results);
             self.record_tool_context_estimate(&tool_results, &follow_up_blocks);
 
-            self.messages.push(Message::now(Role::User, tool_results));
+            self.push_history(Role::User, tool_results);
             if !follow_up_blocks.is_empty() {
-                self.messages.push(Message::now(Role::User, follow_up_blocks));
+                self.push_history(Role::User, follow_up_blocks);
             }
 
             // Save session after each tool round.
@@ -709,13 +754,13 @@ impl AgentEngine {
         let (executable_results, executable_modifiers, follow_up_blocks) = if executable_tool_calls.is_empty() {
             (Vec::new(), Vec::new(), Vec::new())
         } else if let Some(ref approval_mgr) = self.approval_manager {
-            // JSON stream mode: use protocol-based approval
+            // Interactive hosts use protocol-based approval.
             let writer = self
                 .protocol_writer
                 .as_ref()
                 .expect("protocol writer required for approval");
             let auto_approve = self.confirmer.lock().unwrap().is_auto_approve();
-            match execute_tool_calls_with_approval(
+            match execute_tool_calls_with_approval_and_output_limit(
                 &self.tools,
                 &executable_tool_calls,
                 approval_mgr,
@@ -726,6 +771,7 @@ impl AgentEngine {
                 self.hooks.as_mut(),
                 self.compact_level,
                 self.toon_enabled,
+                self.compact_config.tool_output_max_bytes,
             )
             .await
             {
@@ -737,13 +783,14 @@ impl AgentEngine {
             }
         } else {
             // Terminal mode: use interactive confirmation
-            match execute_tool_calls(
+            match execute_tool_calls_with_output_limit(
                 &self.tools,
                 &executable_tool_calls,
                 &self.confirmer,
                 self.hooks.as_mut(),
                 self.compact_level,
                 self.toon_enabled,
+                self.compact_config.tool_output_max_bytes,
             )
             .await
             {
@@ -872,7 +919,7 @@ impl AgentEngine {
 
         if is_success {
             let assistant_content = build_assistant_content(&outcome);
-            self.messages.push(Message::now(Role::Assistant, assistant_content));
+            self.push_history(Role::Assistant, assistant_content);
             self.save_session();
             return Ok(AgentResult {
                 text: combined_text,
@@ -899,12 +946,12 @@ impl AgentEngine {
             combined_text
         };
 
-        self.messages.push(Message::now(
+        self.push_history(
             Role::Assistant,
             vec![ContentBlock::Text {
                 text: fallback_text.clone(),
             }],
-        ));
+        );
         self.save_session();
         Ok(AgentResult {
             text: fallback_text,
@@ -1084,14 +1131,14 @@ impl AgentEngine {
         }
     }
 
-    /// Run the multi-level compaction pipeline before each API call.
+    /// Run context compaction guards before each API call.
     ///
-    /// Execution order: microcompact → autocompact → emergency check.
+    /// Execution order: optional legacy microcompact → autocompact → emergency check.
     /// After a successful autocompact the emergency check is skipped
     /// because the context has been significantly reduced.
     async fn run_compaction(&mut self) -> Result<(), AgentError> {
         // 1. Microcompact (lightweight, no LLM call)
-        if should_microcompact(&self.messages, &self.compact_config) {
+        if self.compact_config.microcompact_enabled && should_microcompact(&self.messages, &self.compact_config) {
             let result = microcompact(&mut self.messages, &self.compact_config);
             if result.cleared_count > 0 {
                 self.output.emit_info(&format!(
@@ -1266,6 +1313,9 @@ impl AgentEngine {
 
         if let Some(new_model) = model {
             let old = replace(&mut self.model, new_model.clone());
+            if let Some(session) = &mut self.current_session {
+                session.model = new_model.clone();
+            }
             changes.push(format!("model: {old} → {new_model}"));
         }
 
@@ -1338,6 +1388,10 @@ impl AgentEngine {
                     changes.push(format!("compaction: invalid ({e})"));
                 }
             }
+        }
+
+        if model_changed {
+            self.save_session();
         }
 
         changes
@@ -1425,6 +1479,11 @@ impl AgentEngine {
             .iter()
             .map(|cmd| (cmd.name().to_string(), cmd.description().to_string()))
             .collect()
+    }
+
+    /// Return user-facing metadata for interactive slash-command discovery.
+    pub fn slash_commands(&self) -> Vec<CommandSpec> {
+        self.commands.specs()
     }
 
     /// Apply context modifiers collected from skill tool executions.
@@ -1532,7 +1591,7 @@ impl AgentEngine {
             .collect();
 
         self.record_tool_context_estimate(&result_blocks, &[]);
-        self.messages.push(Message::now(Role::User, result_blocks));
+        self.push_history(Role::User, result_blocks);
         self.save_session();
     }
 

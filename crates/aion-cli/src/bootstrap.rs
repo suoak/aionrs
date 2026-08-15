@@ -94,6 +94,7 @@ pub(crate) async fn build_engine(
     cwd: &str,
     output: Arc<dyn OutputSink>,
     resume_id: Option<&str>,
+    fork_session: bool,
     on_resume: impl FnOnce(&Session),
 ) -> anyhow::Result<BootstrapResult> {
     let mut agent_bootstrap = AgentBootstrap::new(config, cwd, output);
@@ -101,7 +102,13 @@ pub(crate) async fn build_engine(
     if let Some(resume_id) = resume_id {
         let cfg = agent_bootstrap.config();
         let session_mgr = SessionManager::new(cfg.session.directory.clone().into(), cfg.session.max_sessions);
-        let session = session_mgr.load(resume_id)?;
+        // Forking copies the source session's history into a new session id
+        // and activates the copy; the source session stays untouched.
+        let session = if fork_session {
+            session_mgr.fork(resume_id, None)?
+        } else {
+            session_mgr.load(resume_id)?
+        };
         on_resume(&session);
         agent_bootstrap = agent_bootstrap.resume(session);
     }

@@ -357,19 +357,21 @@ When in plan mode, the agent follows a structured 4-phase process:
 
 ## Context Compression
 
-A three-tier automatic compaction strategy that prevents context window overflow during long conversations.
+A cache-friendly context strategy that bounds each tool result once when it enters history, then uses token-based compaction to prevent context window overflow during long conversations.
 
 ### Tiers
 
 | Tier | Trigger | Method | LLM Call |
 |------|---------|--------|----------|
-| **Microcompact** | Tool result count exceeds threshold or time gap | Clears old tool result content, keeping the N most recent | No |
+| **Tool output limit** | A tool result exceeds `tool_output_max_bytes` | Preserves the beginning and end once before storing the result | No |
 | **Autocompact** | Input tokens approach context limit | LLM summarizes the conversation | Yes |
 | **Emergency** | Input tokens near absolute limit | Blocks further API calls, asks user to start fresh | No |
 
 ### How It Works
 
-- **Microcompact** runs automatically: replaces old Read/ExecCommand/Grep/Glob/Write/Edit results with `[Tool result cleared]`, keeping the 5 most recent results intact. Triggered by count (>10 compactable results) or time (>1 hour since last assistant message).
+- **Tool output limiting** runs once per result after structural output compaction. Results longer than 10,000 UTF-8 bytes retain their beginning and end with a truncation marker in the middle. Stored history is not rewritten later, preserving a stable prompt-cache prefix.
+
+- **Legacy microcompact** can still be enabled explicitly for compatibility, but defaults to off because it rewrites old history and can invalidate prompt caches.
 
 - **Autocompact** triggers when input tokens reach a threshold. By default this is `context_window - output_reserve - autocompact_buffer` (200,000 - 20,000 - 13,000 = 167,000 tokens). Alternatively, set `autocompact_threshold_pct` to trigger at a percentage of the context window (e.g. `50` = 50% of 200k = 100k tokens). The agent calls the LLM to produce a conversation summary, then replaces history with a compact boundary marker. A circuit breaker stops retrying after 3 consecutive failures.
 
@@ -385,7 +387,8 @@ output_reserve = 20000      # Reserved for output generation
 autocompact_buffer = 13000  # Buffer before autocompact triggers
 emergency_buffer = 3000     # Buffer before emergency block
 max_failures = 3            # Circuit breaker threshold
-micro_keep_recent = 5       # Keep N most recent tool results
+tool_output_max_bytes = 10000 # Maximum model-facing bytes per tool result
+microcompact_enabled = false  # Legacy history rewriting; not recommended
 # autocompact_threshold_pct = 50  # Override: trigger at N% of context_window
 ```
 
@@ -442,8 +445,9 @@ TOON instructions are injected into the system prompt so the LLM understands the
 
 ```toml
 [compact]
-compaction = "safe"   # off | safe | full (default: safe)
-toon = false          # Enable TOON encoding (default: false)
+tool_output_max_bytes = 10000 # Final model-facing limit per tool result
+compaction = "safe"          # off | safe | full (default: safe)
+toon = false                 # Enable TOON encoding (default: false)
 ```
 
 ### Runtime Control

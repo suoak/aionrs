@@ -533,6 +533,7 @@ Between receiving `ready` and sending the first `message`, the client may inject
 |------|-------------|
 | `--session-id <ID>` | Use a specific session ID instead of auto-generating one. Errors if the ID already exists. |
 | `--resume <ID>` | Resume a previous session (loads conversation history). Use `latest` to resume the most recent. |
+| `--fork-session` | With `--resume`: fork the session into a NEW session id instead of continuing the original. The `ready` event's `session_id` carries the new id. |
 
 ```bash
 # New session with a custom ID
@@ -540,6 +541,9 @@ aionrs --json-stream --session-id my-conv-123 --provider openai --model gpt-4o
 
 # Resume an existing session
 aionrs --json-stream --resume my-conv-123 --provider openai --model gpt-4o
+
+# Fork an existing session into a new id (read it from `ready.session_id`)
+aionrs --json-stream --resume my-conv-123 --fork-session --provider openai --model gpt-4o
 ```
 
 ### 3.2 Message Turn

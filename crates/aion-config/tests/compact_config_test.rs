@@ -16,6 +16,8 @@ fn tc_2_2_01_compact_config_defaults() {
     assert_eq!(cfg.autocompact_buffer, 13_000);
     assert_eq!(cfg.emergency_buffer, 3_000);
     assert_eq!(cfg.max_failures, 3);
+    assert_eq!(cfg.tool_output_max_bytes, 10_000);
+    assert!(!cfg.microcompact_enabled);
     assert_eq!(cfg.micro_keep_recent, 5);
     assert_eq!(cfg.micro_gap_seconds, 3600);
     assert!(cfg.enabled);
@@ -31,6 +33,8 @@ output_reserve = 15000
 autocompact_buffer = 10000
 emergency_buffer = 2000
 max_failures = 5
+tool_output_max_bytes = 16000
+microcompact_enabled = true
 micro_keep_recent = 3
 micro_gap_seconds = 1800
 compactable_tools = ["Read", "ExecCommand"]
@@ -42,6 +46,8 @@ enabled = false
     assert_eq!(config.compact.autocompact_buffer, 10_000);
     assert_eq!(config.compact.emergency_buffer, 2_000);
     assert_eq!(config.compact.max_failures, 5);
+    assert_eq!(config.compact.tool_output_max_bytes, 16_000);
+    assert!(config.compact.microcompact_enabled);
     assert_eq!(config.compact.micro_keep_recent, 3);
     assert_eq!(config.compact.micro_gap_seconds, 1800);
     assert_eq!(config.compact.compactable_tools, vec!["Read", "ExecCommand"]);
@@ -62,6 +68,8 @@ context_window = 128000
     assert_eq!(config.compact.autocompact_buffer, 13_000);
     assert_eq!(config.compact.emergency_buffer, 3_000);
     assert_eq!(config.compact.max_failures, 3);
+    assert_eq!(config.compact.tool_output_max_bytes, 10_000);
+    assert!(!config.compact.microcompact_enabled);
     assert_eq!(config.compact.micro_keep_recent, 5);
     assert_eq!(config.compact.micro_gap_seconds, 3600);
     assert!(config.compact.enabled);

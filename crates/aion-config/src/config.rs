@@ -1010,9 +1010,8 @@ allow_list = ["Read", "Grep", "Glob"]
 # autocompact_buffer = 13000     # buffer below effective window for autocompact trigger
 # emergency_buffer = 3000        # tokens from limit for emergency block
 # max_failures = 3               # consecutive failures before circuit-breaker trips
-# micro_keep_recent = 5          # keep N most recent tool results
-# micro_gap_seconds = 3600       # gap threshold for time-based microcompact
-# compactable_tools = ["Read", "ExecCommand", "Grep", "Glob", "Write", "Edit"]
+# tool_output_max_bytes = 10000  # maximum model-facing UTF-8 bytes per tool result
+# microcompact_enabled = false   # legacy history rewriting; disabled by default
 # enabled = true
 
 # File state cache (dedup repeated reads, staleness detection)

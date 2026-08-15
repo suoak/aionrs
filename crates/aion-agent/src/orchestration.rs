@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::confirm::{ConfirmResult, ToolConfirmer};
+use aion_config::compact::CompactConfig;
 use aion_config::hooks::HookEngine;
 use aion_protocol::events::{OutputType, ProtocolEvent, ToolCategory, ToolInfo, ToolStatus};
 use aion_protocol::writer::ProtocolEmitter;
@@ -9,7 +10,7 @@ use aion_types::message::ContentBlock;
 use aion_types::skill_types::ContextModifier;
 use aion_types::tool::ToolResult;
 
-use aion_tools::registry::ToolRegistry;
+use aion_tools::{registry::ToolRegistry, truncate_utf8};
 
 /// The combined output of a tool execution batch: protocol content blocks
 /// paired with per-call context modifiers (None for non-skill tools).
@@ -37,9 +38,31 @@ pub async fn execute_tool_calls(
     registry: &ToolRegistry,
     tool_calls: &[ContentBlock],
     confirmer: &Arc<Mutex<ToolConfirmer>>,
+    hooks: Option<&mut HookEngine>,
+    compaction_level: aion_compact::CompactLevel,
+    toon_enabled: bool,
+) -> Result<ToolCallOutcome, ExecutionControl> {
+    execute_tool_calls_with_output_limit(
+        registry,
+        tool_calls,
+        confirmer,
+        hooks,
+        compaction_level,
+        toon_enabled,
+        CompactConfig::default().tool_output_max_bytes,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn execute_tool_calls_with_output_limit(
+    registry: &ToolRegistry,
+    tool_calls: &[ContentBlock],
+    confirmer: &Arc<Mutex<ToolConfirmer>>,
     mut hooks: Option<&mut HookEngine>,
     compaction_level: aion_compact::CompactLevel,
     toon_enabled: bool,
+    tool_output_max_bytes: usize,
 ) -> Result<ToolCallOutcome, ExecutionControl> {
     let mut results = Vec::new();
     let mut modifiers = Vec::new();
@@ -64,7 +87,16 @@ pub async fn execute_tool_calls(
             let hooks_shared: Option<&HookEngine> = hooks.as_deref();
             let futures: Vec<_> = approved
                 .iter()
-                .map(|call| execute_single(registry, call, hooks_shared, compaction_level, toon_enabled))
+                .map(|call| {
+                    execute_single(
+                        registry,
+                        call,
+                        hooks_shared,
+                        compaction_level,
+                        toon_enabled,
+                        tool_output_max_bytes,
+                    )
+                })
                 .collect();
             let batch_results = futures::future::join_all(futures).await;
             for (block, modifier, blocks) in batch_results {
@@ -86,8 +118,15 @@ pub async fn execute_tool_calls(
                         let blocks;
                         {
                             let hooks_shared: Option<&HookEngine> = hooks.as_deref();
-                            (block, modifier, blocks) =
-                                execute_single(registry, call, hooks_shared, compaction_level, toon_enabled).await;
+                            (block, modifier, blocks) = execute_single(
+                                registry,
+                                call,
+                                hooks_shared,
+                                compaction_level,
+                                toon_enabled,
+                                tool_output_max_bytes,
+                            )
+                            .await;
                         }
                         // Merge skill hooks after a successful sequential execution.
                         if !block_is_error(&block) {
@@ -101,6 +140,8 @@ pub async fn execute_tool_calls(
             }
         }
     }
+
+    truncate_tool_result_blocks(&mut results, tool_output_max_bytes);
 
     Ok(ToolCallOutcome {
         results,
@@ -147,6 +188,7 @@ async fn execute_single(
     hooks: Option<&HookEngine>,
     compaction_level: aion_compact::CompactLevel,
     toon_enabled: bool,
+    tool_output_max_bytes: usize,
 ) -> (ContentBlock, Option<ContextModifier>, Vec<ContentBlock>) {
     let ContentBlock::ToolUse { id, name, input, .. } = call else {
         unreachable!("execute_single called with non-ToolUse block")
@@ -190,13 +232,25 @@ async fn execute_single(
             } else {
                 r.content.clone()
             };
-            let content = truncate_result(&error_content, max_size);
-            let content = aion_compact::compact_output(&content, compaction_level);
+            let content = aion_compact::compact_output(&error_content, compaction_level);
             let content = if toon_enabled {
                 aion_compact::compact_output_toon(&content)
             } else {
                 content
             };
+            let original_bytes = content.len();
+            let output_limit = max_size.min(tool_output_max_bytes);
+            let content = truncate_result(&content, output_limit);
+            if content.len() < original_bytes {
+                tracing::debug!(
+                    target: "aion_agent",
+                    tool = %name,
+                    original_bytes,
+                    output_bytes = content.len(),
+                    output_limit,
+                    "tool result truncated for model context"
+                );
+            }
             (
                 ToolResult {
                     content,
@@ -248,9 +302,39 @@ pub async fn execute_tool_calls_with_approval(
     msg_id: &str,
     auto_approve: bool,
     allow_list: &[String],
+    hooks: Option<&mut HookEngine>,
+    compaction_level: aion_compact::CompactLevel,
+    toon_enabled: bool,
+) -> Result<ToolCallOutcome, ExecutionControl> {
+    execute_tool_calls_with_approval_and_output_limit(
+        registry,
+        tool_calls,
+        approval_manager,
+        writer,
+        msg_id,
+        auto_approve,
+        allow_list,
+        hooks,
+        compaction_level,
+        toon_enabled,
+        CompactConfig::default().tool_output_max_bytes,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn execute_tool_calls_with_approval_and_output_limit(
+    registry: &ToolRegistry,
+    tool_calls: &[ContentBlock],
+    approval_manager: &Arc<ToolApprovalManager>,
+    writer: &Arc<dyn ProtocolEmitter>,
+    msg_id: &str,
+    auto_approve: bool,
+    allow_list: &[String],
     mut hooks: Option<&mut HookEngine>,
     compaction_level: aion_compact::CompactLevel,
     toon_enabled: bool,
+    tool_output_max_bytes: usize,
 ) -> Result<ToolCallOutcome, ExecutionControl> {
     let mut results = Vec::new();
     let mut modifiers = Vec::new();
@@ -320,8 +404,15 @@ pub async fn execute_tool_calls_with_approval(
         let blocks;
         {
             let hooks_shared: Option<&HookEngine> = hooks.as_deref();
-            (result, modifier, blocks) =
-                execute_single(registry, call, hooks_shared, compaction_level, toon_enabled).await;
+            (result, modifier, blocks) = execute_single(
+                registry,
+                call,
+                hooks_shared,
+                compaction_level,
+                toon_enabled,
+                tool_output_max_bytes,
+            )
+            .await;
         }
 
         // Emit tool_result event
@@ -351,6 +442,8 @@ pub async fn execute_tool_calls_with_approval(
         modifiers.push(modifier);
         follow_up_blocks.extend(blocks);
     }
+
+    truncate_tool_result_blocks(&mut results, tool_output_max_bytes);
 
     Ok(ToolCallOutcome {
         results,
@@ -413,26 +506,43 @@ fn maybe_append_deferred_hint(original_error: &str, schema: serde_json::Value, i
     )
 }
 
-fn truncate_result(content: &str, max_chars: usize) -> String {
-    if content.len() <= max_chars {
+fn truncate_tool_result_blocks(results: &mut [ContentBlock], max_bytes: usize) {
+    for result in results {
+        if let ContentBlock::ToolResult { content, .. } = result
+            && content.len() > max_bytes
+        {
+            *content = truncate_result(content, max_bytes);
+        }
+    }
+}
+
+fn truncate_result(content: &str, max_bytes: usize) -> String {
+    if content.len() <= max_bytes {
         return content.to_string();
     }
-    let half = max_chars / 2;
-    // Find char boundaries to avoid panicking on multi-byte characters
-    let head_end = content
-        .char_indices()
-        .nth(half)
-        .map(|(i, _)| i)
-        .unwrap_or(content.len());
-    let tail_start = content.char_indices().rev().nth(half - 1).map(|(i, _)| i).unwrap_or(0);
+
+    let marker = format!("\n\n... [truncated output: original {} bytes] ...\n\n", content.len());
+    if marker.len() >= max_bytes {
+        return truncate_utf8(&marker, max_bytes).to_string();
+    }
+
+    let content_budget = max_bytes - marker.len();
+    let head_budget = content_budget.div_ceil(2);
+    let tail_budget = content_budget / 2;
+
+    let mut head_end = head_budget;
+    while head_end > 0 && !content.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+
+    let mut tail_start = content.len() - tail_budget;
+    while tail_start < content.len() && !content.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+
     let head = &content[..head_end];
     let tail = &content[tail_start..];
-    format!(
-        "{}\n\n... [truncated {} chars] ...\n\n{}",
-        head,
-        content.len() - max_chars,
-        tail
-    )
+    format!("{head}{marker}{tail}")
 }
 
 fn truncate_display(s: &str, max: usize) -> String {

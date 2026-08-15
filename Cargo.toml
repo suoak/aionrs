@@ -12,6 +12,7 @@ members = [
     "crates/aion-skills",
     "crates/aion-memory",
     "crates/aion-agent",
+    "crates/aion-tui",
     "crates/aion-cli",
     "workspace-hack",
 ]
@@ -35,6 +36,7 @@ aion-mcp       = { path = "crates/aion-mcp" }
 aion-skills    = { path = "crates/aion-skills" }
 aion-memory    = { path = "crates/aion-memory" }
 aion-agent     = { path = "crates/aion-agent" }
+aion-tui       = { path = "crates/aion-tui" }
 
 # Async runtime
 tokio   = { version = "1", features = ["full"] }
@@ -88,8 +90,10 @@ regex = "1"
 # File system change notification (for skill hot-reload)
 notify = "8"
 
-# Terminal color support
-crossterm = "0.29"
+# Terminal color and event support
+crossterm = { version = "0.29", features = ["event-stream"] }
+pulldown-cmark = { version = "0.13.4", default-features = false }
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "crossterm_0_29", "scrolling-regions"] }
 
 # TTY detection
 is-terminal = "0.4"

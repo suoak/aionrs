@@ -28,7 +28,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl LlmProvider for SuccessfulProvider {
-        async fn stream(&self, _: &LlmRequest) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+        async fn stream(&self, request: &LlmRequest) -> Result<mpsc::Receiver<LlmEvent>, ProviderError> {
+            assert!(
+                request.thinking.is_none(),
+                "compact requests must omit provider thinking parameters"
+            );
             let (tx, rx) = mpsc::channel(4);
             tx.send(LlmEvent::TextDelta("<summary>manual summary</summary>".into()))
                 .await

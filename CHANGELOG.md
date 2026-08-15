@@ -3,6 +3,13 @@
 ## [0.2.13](https://github.com/suoak/aionrs/compare/v0.2.12...v0.2.13) (2026-08-10)
 
 
+### Features
+
+* **agent:** stamp per-run turn ids onto conversation messages ([5889110](https://github.com/iOfficeAI/aionrs/commit/5889110ce376d7e53ce2884147d892b32f2d72ac))
+* **session:** add session forking with lineage and turn-anchored boundaries ([df1cf85](https://github.com/iOfficeAI/aionrs/commit/df1cf851ae6fc106cb7b0836d4d31065e9415ba9))
+* **tui:** add interactive REPL and stabilize tool-output truncation
+
+
 ### Bug Fixes
 
 * **sync:** publish merged upstream fixes ([10d8941](https://github.com/suoak/aionrs/commit/10d89413490b2b35effdae908d92c57327c5cf92))

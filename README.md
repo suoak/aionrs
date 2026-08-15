@@ -17,7 +17,7 @@ A Rust-based LLM tool-use agent for the command line. It connects to LLM APIs, a
 - **Session persistence** — Save and resume conversation history
 - **Persistent memory** — Project-specific memory with auto-indexing across sessions (see [docs/advanced.md](docs/advanced.md#memory-system))
 - **Plan mode** — Read-only exploration mode for designing implementation plans before coding (see [docs/advanced.md](docs/advanced.md#plan-mode))
-- **Context compression** — Three-tier automatic compaction: microcompact, autocompact, emergency (see [docs/advanced.md](docs/advanced.md#context-compression))
+- **Context compression** — Stable tool-output limits, token-based autocompact, and an emergency guard (see [docs/advanced.md](docs/advanced.md#context-compression))
 - **Output compaction** — Configurable output compression (off/safe/full) with TOON encoding (see [docs/advanced.md](docs/advanced.md#output-compaction))
 - **File state cache** — LRU cache with read deduplication and write tracking
 - **Prompt caching** — Anthropic cache_control for up to 90% cost reduction
@@ -44,6 +44,24 @@ aionrs
 # Full CLI reference
 aionrs --help
 ```
+
+Interactive terminal sessions keep finalized conversation in the terminal's
+native scrollback with an inline composer at the bottom. Type `/` to browse
+available commands; use Enter to send, Shift+Enter (or Ctrl+J as a fallback)
+for a newline, and Ctrl+C to stop the active turn. Use the mouse wheel to read
+earlier finalized conversation content. Mouse capture stays
+disabled so terminal text can be selected and copied normally. Consecutive tool
+calls are collected under one `• Tools` step with an appended status row for
+each call. Status keeps an explicit label and semantic color, while tool input
+and output use a responsive one-line preview instead of occupying the
+conversation viewport.
+
+TUI-owned commands include `/status`, `/model`, `/permissions`, `/new`,
+`/resume`, `/mcp`, and `/skills`. Running `/resume` without an ID opens a
+full-screen, mouse- and keyboard-navigable picker containing every saved session
+up to the configured `session.max_sessions` retention limit. Session switches
+rebuild the agent runtime without exiting the interactive UI. A fresh TUI does
+not create a session until the first conversation message is sent.
 
 ## Runtime Limits
 

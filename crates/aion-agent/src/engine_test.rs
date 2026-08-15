@@ -17,10 +17,12 @@ mod tests_set_config {
     use aion_tools::registry::ToolRegistry;
     use aion_types::llm::{LlmEvent, LlmRequest};
     use aion_types::message::ImageInputCapability;
+    use tempfile::tempdir;
 
     use super::{CompactLevel, ProviderCompat};
     use crate::confirm::ToolConfirmer;
     use crate::output::OutputSink;
+    use crate::session::SessionManager;
 
     struct NullOutput;
     impl OutputSink for NullOutput {
@@ -55,6 +57,8 @@ mod tests_set_config {
             messages: vec![],
             total_usage: Default::default(),
             msg_id: String::new(),
+            pending_turn_id: None,
+            current_turn_id: None,
             max_turns_per_run: Some(10),
             max_tool_call_malformed_turns: 3,
             max_tool_call_failure_turns: 3,
@@ -97,6 +101,23 @@ mod tests_set_config {
         assert_eq!(changes.len(), 1);
         assert!(changes[0].contains("old-model"));
         assert!(changes[0].contains("new-model"));
+    }
+
+    #[test]
+    fn set_config_model_change_persists_session_metadata_immediately() {
+        let directory = tempdir().unwrap();
+        let manager = SessionManager::new(directory.path().to_path_buf(), 10);
+        let session = manager
+            .create("openai", "old-model", "/workspace", Some("model-switch"))
+            .unwrap();
+        let mut engine = make_engine("old-model");
+        engine.session_manager = Some(manager);
+        engine.current_session = Some(session);
+
+        engine.apply_config_update(Some("new-model".into()), None, None, None, None, None);
+
+        let manager = SessionManager::new(directory.path().to_path_buf(), 10);
+        assert_eq!(manager.load("model-switch").unwrap().model, "new-model");
     }
 
     #[test]
@@ -431,6 +452,8 @@ mod tests_phase6 {
             messages: vec![],
             total_usage: Default::default(),
             msg_id: String::new(),
+            pending_turn_id: None,
+            current_turn_id: None,
             max_turns_per_run: Some(10),
             max_tool_call_malformed_turns: 3,
             max_tool_call_failure_turns: 3,
@@ -716,6 +739,8 @@ mod tests_compact {
             messages,
             total_usage: Default::default(),
             msg_id: String::new(),
+            pending_turn_id: None,
+            current_turn_id: None,
             max_turns_per_run: Some(10),
             max_tool_call_malformed_turns: 3,
             max_tool_call_failure_turns: 3,
@@ -937,6 +962,8 @@ mod tests_compact {
         context_state.microcompact_count = 5;
         let session = Session {
             id: "resume-context".into(),
+            forked_from: None,
+            root_id: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             provider: "anthropic".into(),
@@ -1033,6 +1060,56 @@ mod tests_compact {
         assert_eq!(loaded.context_state.source, ContextUsageSource::ProviderExact);
     }
 
+    #[tokio::test]
+    async fn run_stamps_one_turn_id_per_run_and_honors_host_supplied_id() {
+        let directory = tempdir().unwrap();
+        let mut config = test_config();
+        config.session.enabled = true;
+        config.session.directory = directory.path().display().to_string();
+        let provider: Arc<dyn LlmProvider> = Arc::new(SuccessfulProvider {
+            usage: TokenUsage::default(),
+        });
+        let mut engine = super::AgentEngine::new_with_provider(
+            provider,
+            config,
+            ToolRegistry::new(),
+            Arc::new(NullOutput),
+            directory.path().to_path_buf(),
+        );
+        engine
+            .init_session(
+                "anthropic",
+                &directory.path().display().to_string(),
+                Some("turn-stamps"),
+            )
+            .unwrap();
+
+        // Turn 1: engine mints its own id; user + assistant share it.
+        engine.run("first", "msg-1").await.unwrap();
+        let first_turn = engine.current_turn_id().expect("minted").to_owned();
+
+        // Turn 2: host-supplied id wins and is consumed exactly once.
+        engine.set_next_turn_id(Some("turn_host123".into()));
+        engine.run("second", "msg-2").await.unwrap();
+        assert_eq!(engine.current_turn_id(), Some("turn_host123"));
+
+        let manager = SessionManager::new(directory.path().to_path_buf(), 10);
+        let loaded = manager.load("turn-stamps").unwrap();
+        assert_eq!(loaded.messages.len(), 4);
+        let turn_ids: Vec<_> = loaded.messages.iter().map(|m| m.turn_id.as_deref()).collect();
+        assert_eq!(
+            turn_ids,
+            vec![
+                Some(first_turn.as_str()),
+                Some(first_turn.as_str()),
+                Some("turn_host123"),
+                Some("turn_host123"),
+            ],
+            "every message of a run carries that run's turn id"
+        );
+        assert_ne!(first_turn, "turn_host123");
+    }
+
     #[test]
     fn all_tool_results_are_added_before_the_next_threshold_check() {
         let config = CompactConfig {
@@ -1111,6 +1188,36 @@ mod tests_compact {
     // -- Microcompact runs when count trigger fires --
 
     #[tokio::test]
+    async fn microcompact_is_disabled_by_default() {
+        let mut messages = Vec::new();
+        for i in 0..12 {
+            let id = format!("t{i}");
+            messages.push(tool_use_msg(&id, "Read"));
+            messages.push(tool_result_msg(&id, &format!("data-{i}")));
+        }
+
+        let config = CompactConfig {
+            micro_keep_recent: 3,
+            ..Default::default()
+        };
+        let state = CompactState::new();
+        let mut engine = make_compact_engine(config, state, messages);
+
+        engine.run_compaction().await.unwrap();
+
+        let cleared_count = engine
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter(
+                |block| matches!(block, ContentBlock::ToolResult { content, .. } if content == "[Tool result cleared]"),
+            )
+            .count();
+        assert_eq!(cleared_count, 0);
+        assert_eq!(engine.context_state.microcompact_count, 0);
+    }
+
+    #[tokio::test]
     async fn microcompact_clears_old_results() {
         // 12 tool results with keep_recent=3 (threshold=6) → should clear 9
         let mut messages = Vec::new();
@@ -1121,6 +1228,7 @@ mod tests_compact {
         }
 
         let config = CompactConfig {
+            microcompact_enabled: true,
             micro_keep_recent: 3,
             ..Default::default()
         };
@@ -1159,6 +1267,7 @@ mod tests_compact {
             context_window: 200_000,
             emergency_buffer: 3_000,
             max_failures: 3,
+            microcompact_enabled: true,
             micro_keep_recent: 1,
             ..Default::default()
         };
@@ -1243,6 +1352,7 @@ mod tests_compact {
 
         let config = CompactConfig {
             enabled: false,
+            microcompact_enabled: true,
             micro_keep_recent: 3,
             ..Default::default()
         };
@@ -1418,6 +1528,8 @@ mod tests_plan_mode {
             messages: vec![],
             total_usage: Default::default(),
             msg_id: String::new(),
+            pending_turn_id: None,
+            current_turn_id: None,
             max_turns_per_run: Some(10),
             max_tool_call_malformed_turns: 3,
             max_tool_call_failure_turns: 3,
@@ -1638,6 +1750,8 @@ mod tests_handle_command {
             messages: vec![],
             total_usage: Default::default(),
             msg_id: String::new(),
+            pending_turn_id: None,
+            current_turn_id: None,
             max_turns_per_run: Some(10),
             max_tool_call_malformed_turns: 3,
             max_tool_call_failure_turns: 3,
@@ -2662,6 +2776,8 @@ mod tests_tool_policy_enforcement {
             messages: Vec::new(),
             total_usage: Default::default(),
             msg_id: "test-message".to_string(),
+            pending_turn_id: None,
+            current_turn_id: None,
             max_tokens: Some(4096),
             max_turns_per_run: Some(10),
             max_tool_call_malformed_turns: 3,

@@ -262,11 +262,10 @@ async fn test_post_hook_runs_after_tool() {
     }
 }
 
-/// Results that exceed max_result_size are truncated with a "[truncated N chars]" marker
+/// Results that exceed the default model-facing byte limit preserve their head and tail.
 #[tokio::test]
 async fn test_tool_result_truncation() {
-    // Default max_result_size is 50_000; build a result that exceeds it
-    let long_result: String = "x".repeat(60_000);
+    let long_result = format!("HEAD{}TAIL", "x".repeat(60_000));
 
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(MockTool::new("big_tool", &long_result, false)));
@@ -283,15 +282,46 @@ async fn test_tool_result_truncation() {
         ContentBlock::ToolResult { content, is_error, .. } => {
             assert!(!is_error);
             assert!(
-                content.len() < long_result.len(),
-                "truncated result should be shorter than the original"
+                content.len() <= 10_000,
+                "truncated result must respect the configured byte limit"
             );
             assert!(
                 content.contains("truncated"),
                 "truncated result should contain the word 'truncated', got length {}",
                 content.len()
             );
+            assert!(content.starts_with("HEAD"));
+            assert!(content.ends_with("TAIL"));
         }
         other => panic!("expected ToolResult, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_tool_error_truncation_uses_the_same_limit() {
+    let long_error = format!("ERROR_HEAD{}ERROR_TAIL", "failure".repeat(10_000));
+    let mut registry = ToolRegistry::new();
+    registry.register(Box::new(MockTool::new("failing_tool", &long_error, true)));
+
+    let tool_calls = vec![make_tool_use("id-error", "failing_tool")];
+    let results = execute_tool_calls(
+        &registry,
+        &tool_calls,
+        &auto_approve_confirmer(),
+        None,
+        CompactLevel::Off,
+        false,
+    )
+    .await
+    .expect("execution should succeed");
+
+    match &results[0] {
+        ContentBlock::ToolResult { content, is_error, .. } => {
+            assert!(is_error);
+            assert!(content.len() <= 10_000);
+            assert!(content.starts_with("ERROR_HEAD"));
+            assert!(content.ends_with("ERROR_TAIL"));
+        }
+        other => panic!("expected ToolResult, got {other:?}"),
     }
 }

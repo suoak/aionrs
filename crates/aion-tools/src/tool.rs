@@ -87,7 +87,9 @@ pub trait Tool: Send + Sync {
         None
     }
 
-    /// Max result size in chars before truncation
+    /// Per-tool maximum result size in UTF-8 bytes before truncation.
+    ///
+    /// The agent-level output limit may impose a smaller bound.
     fn max_result_size(&self) -> usize {
         50_000
     }

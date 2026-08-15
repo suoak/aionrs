@@ -508,6 +508,7 @@ async fn tc_2_6_02_micro_before_auto_execution_order() {
 
     let mut config = test_config();
     config.compact = CompactConfig {
+        microcompact_enabled: true,
         micro_keep_recent: 3,
         compactable_tools: vec!["mock_tool".into()],
         context_window: 200_000,
@@ -656,6 +657,7 @@ async fn tc_2_6_e2e_02_micro_and_auto_cooperative() {
 
     let mut config = test_config();
     config.compact = CompactConfig {
+        microcompact_enabled: true,
         micro_keep_recent: 3,
         compactable_tools: vec!["mock_tool".into()],
         context_window: 200_000,

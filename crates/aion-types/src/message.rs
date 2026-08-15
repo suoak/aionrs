@@ -163,6 +163,13 @@ pub struct Message {
     /// whether old tool results should be cleared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<DateTime<Utc>>,
+    /// The turn this message belongs to (every message appended during one
+    /// engine run carries the same id). Used as the session-side anchor when
+    /// forking a session at a historical turn. `None` on messages written
+    /// before turn tracking existed and on compaction-synthesized summaries —
+    /// such messages cannot anchor a fork.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
 }
 
 impl Message {
@@ -172,6 +179,7 @@ impl Message {
             role,
             content,
             timestamp: None,
+            turn_id: None,
         }
     }
 
@@ -181,6 +189,7 @@ impl Message {
             role,
             content,
             timestamp: Some(Utc::now()),
+            turn_id: None,
         }
     }
 }

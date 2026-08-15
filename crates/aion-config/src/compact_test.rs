@@ -12,6 +12,8 @@ mod tests {
         assert_eq!(cfg.autocompact_buffer, 13_000);
         assert_eq!(cfg.emergency_buffer, 3_000);
         assert_eq!(cfg.max_failures, 3);
+        assert_eq!(cfg.tool_output_max_bytes, 10_000);
+        assert!(!cfg.microcompact_enabled);
         assert_eq!(cfg.micro_keep_recent, 5);
         assert_eq!(cfg.micro_gap_seconds, 3600);
         assert!(cfg.enabled);
@@ -30,6 +32,8 @@ output_reserve = 10000
 autocompact_buffer = 8000
 emergency_buffer = 2000
 max_failures = 5
+tool_output_max_bytes = 16000
+microcompact_enabled = true
 micro_keep_recent = 3
 micro_gap_seconds = 1800
 compactable_tools = ["Read", "ExecCommand"]
@@ -41,6 +45,8 @@ enabled = false
         assert_eq!(cfg.autocompact_buffer, 8_000);
         assert_eq!(cfg.emergency_buffer, 2_000);
         assert_eq!(cfg.max_failures, 5);
+        assert_eq!(cfg.tool_output_max_bytes, 16_000);
+        assert!(cfg.microcompact_enabled);
         assert_eq!(cfg.micro_keep_recent, 3);
         assert_eq!(cfg.micro_gap_seconds, 1800);
         assert_eq!(cfg.compactable_tools, vec!["Read", "ExecCommand"]);
@@ -59,6 +65,8 @@ context_window = 128000
         assert_eq!(cfg.autocompact_buffer, 13_000);
         assert_eq!(cfg.emergency_buffer, 3_000);
         assert_eq!(cfg.max_failures, 3);
+        assert_eq!(cfg.tool_output_max_bytes, 10_000);
+        assert!(!cfg.microcompact_enabled);
         assert_eq!(cfg.micro_keep_recent, 5);
         assert_eq!(cfg.micro_gap_seconds, 3600);
         assert!(cfg.enabled);
@@ -73,6 +81,8 @@ context_window = 128000
         assert_eq!(cfg.autocompact_buffer, default.autocompact_buffer);
         assert_eq!(cfg.emergency_buffer, default.emergency_buffer);
         assert_eq!(cfg.max_failures, default.max_failures);
+        assert_eq!(cfg.tool_output_max_bytes, default.tool_output_max_bytes);
+        assert_eq!(cfg.microcompact_enabled, default.microcompact_enabled);
         assert_eq!(cfg.micro_keep_recent, default.micro_keep_recent);
         assert_eq!(cfg.micro_gap_seconds, default.micro_gap_seconds);
         assert_eq!(cfg.enabled, default.enabled);

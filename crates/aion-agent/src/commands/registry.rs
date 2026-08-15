@@ -11,6 +11,14 @@ use aion_providers::LlmProvider;
 use aion_types::message::Message;
 use aion_types::tool::ToolDef;
 
+/// User-facing metadata for a registered slash command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandSpec {
+    pub name: String,
+    pub aliases: Vec<String>,
+    pub description: String,
+}
+
 /// Result of executing a slash command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandResult {
@@ -74,6 +82,17 @@ impl CommandRegistry {
 
     pub fn all(&self) -> &[Box<dyn SlashCommand>] {
         &self.commands
+    }
+
+    pub fn specs(&self) -> Vec<CommandSpec> {
+        self.commands
+            .iter()
+            .map(|command| CommandSpec {
+                name: command.name().to_string(),
+                aliases: command.aliases().iter().map(|alias| (*alias).to_string()).collect(),
+                description: command.description().to_string(),
+            })
+            .collect()
     }
 }
 

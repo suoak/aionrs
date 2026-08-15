@@ -47,6 +47,8 @@ mod tests {
         let cjk: String = "这是一段较长的中文内容用于测试截断功能".repeat(50);
         let result = truncate_result(&cjk, 100);
         assert!(result.contains("truncated"));
+        assert!(result.len() <= 100);
+        assert!(result.is_char_boundary(result.len()));
     }
 
     #[test]
@@ -54,6 +56,23 @@ mod tests {
         let mixed = "Hello你好World世界Test测试".repeat(100);
         let result = truncate_result(&mixed, 200);
         assert!(result.contains("truncated"));
+        assert!(result.len() <= 200);
+    }
+
+    #[test]
+    fn truncate_result_preserves_head_and_tail_with_strict_byte_limit() {
+        let content = format!("HEAD{}TAIL", "middle".repeat(100));
+        let result = truncate_result(&content, 100);
+
+        assert!(result.starts_with("HEAD"));
+        assert!(result.ends_with("TAIL"));
+        assert!(result.len() <= 100);
+        assert!(result.contains(&format!("original {} bytes", content.len())));
+    }
+
+    #[test]
+    fn truncate_result_zero_budget_returns_empty_output() {
+        assert_eq!(truncate_result("content", 0), "");
     }
 
     // -- maybe_append_deferred_hint -------------------------------------------
@@ -225,7 +244,7 @@ mod tests {
             extra: None,
         };
         let (result, _, follow_up_blocks) =
-            execute_single(&registry, &call, None, aion_compact::CompactLevel::Off, false).await;
+            execute_single(&registry, &call, None, aion_compact::CompactLevel::Off, false, 10_000).await;
         assert!(follow_up_blocks.is_empty());
         if let ContentBlock::ToolResult { content, is_error, .. } = &result {
             assert!(is_error);
@@ -247,7 +266,7 @@ mod tests {
             extra: None,
         };
         let (result, _, follow_up_blocks) =
-            execute_single(&registry, &call, None, aion_compact::CompactLevel::Off, false).await;
+            execute_single(&registry, &call, None, aion_compact::CompactLevel::Off, false, 10_000).await;
         assert!(follow_up_blocks.is_empty());
         if let ContentBlock::ToolResult { content, is_error, .. } = &result {
             // Tool succeeds because input.get("tasks") is Some
@@ -268,7 +287,7 @@ mod tests {
             extra: None,
         };
         let (result, _, follow_up_blocks) =
-            execute_single(&registry, &call, None, aion_compact::CompactLevel::Off, false).await;
+            execute_single(&registry, &call, None, aion_compact::CompactLevel::Off, false, 10_000).await;
         assert!(follow_up_blocks.is_empty());
         if let ContentBlock::ToolResult { content, is_error, .. } = &result {
             assert!(!is_error);
@@ -288,7 +307,7 @@ mod tests {
             extra: None,
         };
         let (result, _, follow_up_blocks) =
-            execute_single(&registry, &call, None, aion_compact::CompactLevel::Off, false).await;
+            execute_single(&registry, &call, None, aion_compact::CompactLevel::Off, false, 10_000).await;
         assert!(follow_up_blocks.is_empty());
         if let ContentBlock::ToolResult { content, is_error, .. } = &result {
             assert!(is_error);

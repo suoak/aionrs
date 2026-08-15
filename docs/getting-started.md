@@ -50,6 +50,7 @@ subcommand runs its action and exits — it does not start the agent main flow.
 | `--auto-approve` | Skip all tool confirmations |
 | `--json-stream` | JSON Lines mode for host integration |
 | `--resume <id>` | Resume a previous session |
+| `--fork-session` | With `--resume`: fork into a new session id, leaving the original untouched |
 | `--log-dir <path>` | Enable file logging to the given directory |
 | `--log-level <filter>` | Log level filter (e.g. `debug`, `info`, `aion_providers=debug`) |
 
@@ -233,27 +234,66 @@ aionrs config init
 aionrs "Read and explain crates/aion-agent/src/engine.rs"
 ```
 
-### 3. Interactive REPL
+### 3. Interactive terminal UI
 
-```
-$ aionrs
-
-> Read the file Cargo.toml
-     1  [package]
-     2  name = "aionrs"
-     ...
-[turns: 1 | tokens: 1234 in / 567 out]
-
-> Add serde_yaml to dependencies
-[tool] Write({"file_path":"Cargo.toml","content":"..."})
-Allow? [y]es / [n]o / [a]lways / [q]uit > y
-[Write] OK
-[turns: 2 | tokens: 2345 in / 890 out]
-
-> /quit
+```bash
+aionrs
 ```
 
-REPL commands: `/quit`, `/exit`, or empty line to exit.
+When stdin and stdout are attached to a terminal, `aionrs` keeps finalized
+conversation in native terminal scrollback and renders an inline composer at
+the bottom, with streaming responses, tool activity, and in-place approval
+prompts. Type `/` at the beginning of the composer to
+open the command popup, continue typing to filter it, use Up/Down to move, and
+press Tab to complete or Enter to run the selected command.
+
+Each thinking segment starts with `•`. Consecutive tool calls are collected
+under a single `• Tools` step and appended as nested rows, so a batch remains
+easy to scan without losing its individual calls. Tool rows update in place as
+`queued`, `approval`, `running`, `done`, `failed`, or `cancelled`; the status
+label and semantic color change together. Tool input and output are displayed
+as a responsive one-line preview, while the full value remains in the saved
+conversation.
+
+| Key | Action |
+|-----|--------|
+| Enter | Send the current message |
+| Shift+Enter | Insert a newline (Ctrl+J is available as a fallback) |
+| Up/Down | Select a slash command |
+| Mouse wheel | Scroll finalized conversation in the terminal's native scrollback |
+| Ctrl+C | Stop the active turn; clear a draft or quit while idle |
+| Ctrl+D | Quit while the composer is empty |
+
+Mouse capture is deliberately disabled. Drag across any visible conversation
+text and use the terminal's normal copy shortcut (`Cmd+C` on macOS or usually
+`Ctrl+Shift+C` on Linux/Windows terminals).
+
+Agent commands are `/compact`, `/context`, `/clear`, `/help`, and `/quit`.
+The interactive UI also provides:
+
+| Command | Description |
+|---------|-------------|
+| `/status` | Show provider, model, session, permission mode, and context usage |
+| `/model [name]` | Show the current model or switch to a model ID |
+| `/permissions [default\|auto_edit\|yolo]` | Show or change the tool approval mode |
+| `/new` | Start a new session without exiting the interactive UI |
+| `/resume [id\|latest]` | Open the session picker or resume an ID in place |
+| `/mcp` | Show connected MCP servers and tool counts |
+| `/skills` | Show model-visible skills loaded for the current runtime |
+
+The session picker replaces the conversation with a focused full-screen list.
+Use the mouse wheel or Up/Down to move, Enter to resume, and Esc to close it.
+All saved sessions are shown in last-update order; the number retained on disk
+is controlled by `session.max_sessions` (20 by default).
+Resumed conversations are restored into the terminal's native scrollback. Use
+the mouse wheel to move between the earliest and latest turns.
+
+`/help` combines both command groups. `/exit` is an alias for `/quit`. Empty
+messages no longer exit interactive mode. Model switching accepts an explicit
+model ID; an interactive model candidate picker is not available yet.
+
+When input or output is redirected, `aionrs` keeps the plain line-oriented REPL
+for compatibility with scripts and terminals that do not support the interactive UI.
 
 ### 4. Switching Profiles
 
@@ -273,7 +313,9 @@ aionrs "List all Rust files in this project"
 
 ## Tool Confirmation
 
-Destructive tools (Write, Edit, ExecCommand) prompt for confirmation before execution:
+Tools that require approval are displayed in an in-place dialog in the terminal
+UI. Press `y` or Enter to allow once, `a` to allow the category for the rest of
+the session, or `n`/Esc to deny. The plain REPL uses the equivalent text prompt:
 
 ```
 [tool] Write({"file_path": "/tmp/test.rs", "content": "..."})
@@ -295,7 +337,10 @@ Allow? [y]es / [n]o / [a]lways / [q]uit > y
 
 ## Session Management
 
-Sessions auto-save to `.aionrs/sessions/`.
+Sessions auto-save to `.aionrs/sessions/<session-id>/state.json`. Sessions
+created by versions that used the duplicated
+`.aionrs/sessions/sessions/<session-id>/state.json` layout remain readable and
+are copied to the normalized location when resumed.
 
 ```bash
 # List saved sessions
@@ -307,11 +352,17 @@ aionrs --resume latest
 # Resume a specific session
 aionrs --resume a1b2c3
 
+# Fork a session: copy its history into a new session id and continue
+# there, leaving the original session untouched
+aionrs --resume a1b2c3 --fork-session
+
 # Create a session with a custom ID
 aionrs --session-id my-conv-123
 ```
 
 - `--session-id` and `--resume` are mutually exclusive
+- `--fork-session` requires `--resume`; the forked session records its
+  parent in `forked_from` and the fork-tree root in `root_id`
 - `--session-id` errors if the ID already exists
 - Both flags work in interactive and `--json-stream` mode
 - Auto-saves after each tool round

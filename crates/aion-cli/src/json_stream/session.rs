@@ -30,6 +30,7 @@ pub(crate) async fn run(
     cwd: &str,
     resume: Option<String>,
     session_id: Option<String>,
+    fork_session: bool,
 ) -> anyhow::Result<()> {
     let writer = Arc::new(ProtocolWriter::new());
     let protocol_sink = Arc::new(ProtocolSink::new(writer.clone()));
@@ -39,8 +40,17 @@ pub(crate) async fn run(
     let provider_name = config.provider_label.clone();
 
     // JSON stream mode never prints a resume banner — the host is expected
-    // to render its own resume UX from the `Ready` event's session_id.
-    let result = build_engine(config, cwd, output.clone(), resume.as_deref(), |_session| {}).await?;
+    // to render its own resume UX from the `Ready` event's session_id (which
+    // for a fork is the NEW session id, not the --resume source).
+    let result = build_engine(
+        config,
+        cwd,
+        output.clone(),
+        resume.as_deref(),
+        fork_session,
+        |_session| {},
+    )
+    .await?;
     let mut engine = result.engine;
     let initial_has_mcp = result.has_mcp;
 

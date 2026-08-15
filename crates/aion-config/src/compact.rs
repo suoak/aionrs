@@ -29,11 +29,25 @@ pub struct CompactConfig {
     #[serde(default = "default_max_failures")]
     pub max_failures: u32,
 
-    /// Microcompact: keep the N most recent compactable tool results.
+    /// Maximum UTF-8 byte length of one model-facing tool result.
+    ///
+    /// Oversized results are truncated once, preserving their beginning and
+    /// end. This keeps stored history stable for prompt caching.
+    #[serde(default = "default_tool_output_max_bytes")]
+    pub tool_output_max_bytes: usize,
+
+    /// Whether to enable the legacy history-rewriting microcompact pass.
+    ///
+    /// Disabled by default because rewriting old tool results invalidates the
+    /// stable prompt prefix. Prefer the per-result output limit instead.
+    #[serde(default)]
+    pub microcompact_enabled: bool,
+
+    /// Legacy microcompact: keep the N most recent compactable tool results.
     #[serde(default = "default_micro_keep_recent")]
     pub micro_keep_recent: usize,
 
-    /// Microcompact: gap threshold in seconds for time-based trigger.
+    /// Legacy microcompact: gap threshold in seconds for time-based trigger.
     /// When the last assistant message is older than this, microcompact fires.
     #[serde(default = "default_micro_gap_seconds")]
     pub micro_gap_seconds: u64,
@@ -49,7 +63,7 @@ pub struct CompactConfig {
     pub autocompact_threshold_pct: Option<u8>,
 
     /// Whether the compaction system is enabled.
-    /// When false, microcompact and autocompact are skipped
+    /// When false, legacy microcompact and autocompact are skipped
     /// (emergency truncation still applies).
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -75,6 +89,8 @@ impl Default for CompactConfig {
             autocompact_buffer: default_autocompact_buffer(),
             emergency_buffer: default_emergency_buffer(),
             max_failures: default_max_failures(),
+            tool_output_max_bytes: default_tool_output_max_bytes(),
+            microcompact_enabled: false,
             micro_keep_recent: default_micro_keep_recent(),
             micro_gap_seconds: default_micro_gap_seconds(),
             compactable_tools: default_compactable_tools(),
@@ -103,6 +119,9 @@ fn default_emergency_buffer() -> usize {
 }
 fn default_max_failures() -> u32 {
     3
+}
+fn default_tool_output_max_bytes() -> usize {
+    10_000
 }
 fn default_micro_keep_recent() -> usize {
     5
