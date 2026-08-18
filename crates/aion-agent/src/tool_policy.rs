@@ -13,6 +13,34 @@ pub enum ToolPolicy {
     AllowOnly(BTreeSet<String>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolGateDenial {
+    Policy,
+    Capability,
+    Approval,
+    Hook,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolGateDecision {
+    Allow,
+    Deny(ToolGateDenial),
+}
+
+impl ToolGateDecision {
+    /// Combine gates monotonically: once denied, no later gate may re-allow execution.
+    pub(crate) fn and(self, next: Self) -> Self {
+        match self {
+            Self::Deny(_) => self,
+            Self::Allow => next,
+        }
+    }
+
+    pub(crate) fn is_denied(self) -> bool {
+        matches!(self, Self::Deny(_))
+    }
+}
+
 impl ToolPolicy {
     pub fn allow_only<I, S>(tool_names: I) -> Self
     where
@@ -26,6 +54,14 @@ impl ToolPolicy {
         match self {
             Self::Unrestricted => true,
             Self::AllowOnly(tool_names) => tool_names.contains(tool_name),
+        }
+    }
+
+    pub(crate) fn decision(&self, tool_name: &str) -> ToolGateDecision {
+        if self.allows(tool_name) {
+            ToolGateDecision::Allow
+        } else {
+            ToolGateDecision::Deny(ToolGateDenial::Policy)
         }
     }
 }

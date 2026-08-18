@@ -236,13 +236,34 @@ impl McpManager {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<String, McpError> {
+        let tool_result = self.call_tool_result(server_name, tool_name, arguments).await?;
+        let mut text_parts = Vec::new();
+        for content in &tool_result.content {
+            match content {
+                super::protocol::McpContent::Text { text } => text_parts.push(text.clone()),
+                super::protocol::McpContent::Image { mime_type, .. } => {
+                    text_parts.push(format!("[image: {mime_type}]"));
+                }
+                super::protocol::McpContent::Resource { .. } => text_parts.push("[resource]".to_string()),
+            }
+        }
+        Ok(text_parts.join("\n"))
+    }
+
+    /// Execute a tool without flattening its MCP content blocks.
+    pub async fn call_tool_result(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<McpToolResult, McpError> {
         let server = self
             .servers
             .get(server_name)
             .ok_or_else(|| McpError::ServerNotFound(server_name.to_string()))?;
 
         let request = JsonRpcRequest::new(
-            0, // id doesn't matter for stdio, will be used for SSE/HTTP
+            self.next_id.fetch_add(1, Ordering::Relaxed),
             "tools/call",
             Some(json!({
                 "name": tool_name,
@@ -257,23 +278,8 @@ impl McpManager {
             .ok_or_else(|| McpError::Transport("No result in tool call response".into()))?;
 
         // Parse result and concatenate text content
-        let tool_result: McpToolResult = serde_json::from_value(result_value)
-            .map_err(|e| McpError::Transport(format!("Failed to parse tool result: {}", e)))?;
-
-        let mut text_parts = Vec::new();
-        for content in &tool_result.content {
-            match content {
-                super::protocol::McpContent::Text { text } => text_parts.push(text.clone()),
-                super::protocol::McpContent::Image { mime_type, .. } => {
-                    text_parts.push(format!("[image: {}]", mime_type));
-                }
-                super::protocol::McpContent::Resource { .. } => {
-                    text_parts.push("[resource]".to_string());
-                }
-            }
-        }
-
-        Ok(text_parts.join("\n"))
+        serde_json::from_value(result_value)
+            .map_err(|e| McpError::Transport(format!("Failed to parse tool result: {e}")))
     }
 
     /// Get names of all connected servers.

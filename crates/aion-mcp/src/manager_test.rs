@@ -70,6 +70,35 @@ mod tests {
         }
     }
 
+    struct RecordingTransport {
+        responses: Mutex<Vec<serde_json::Value>>,
+        request_ids: Arc<Mutex<Vec<u64>>>,
+    }
+
+    #[async_trait]
+    impl McpTransport for RecordingTransport {
+        async fn request(&self, req: &JsonRpcRequest) -> Result<JsonRpcResponse, McpError> {
+            if let Some(id) = req.id {
+                self.request_ids.lock().unwrap().push(id);
+            }
+            let value = self.responses.lock().unwrap().remove(0);
+            Ok(JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: req.id,
+                result: Some(value),
+                error: None,
+            })
+        }
+
+        async fn notify(&self, _req: &JsonRpcRequest) -> Result<(), McpError> {
+            Ok(())
+        }
+
+        async fn close(&self) -> Result<(), McpError> {
+            Ok(())
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Test helpers: build McpManager with pre-configured servers
     // -----------------------------------------------------------------------
@@ -383,5 +412,31 @@ mod tests {
         let id2 = manager.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(id1, 10, "first ID should be 10");
         assert_eq!(id2, 11, "second ID should be 11");
+    }
+
+    #[tokio::test]
+    async fn tool_calls_use_distinct_request_ids_and_preserve_structured_result() {
+        let request_ids = Arc::new(Mutex::new(Vec::new()));
+        let transport = RecordingTransport {
+            responses: Mutex::new(vec![
+                json!({
+                    "content": [
+                        {"type": "text", "text": "first"},
+                        {"type": "image", "data": "aGVsbG8=", "mimeType": "image/png"}
+                    ]
+                }),
+                json!({"content": [{"type": "text", "text": "failed"}], "isError": true}),
+            ]),
+            request_ids: Arc::clone(&request_ids),
+        };
+        let manager = make_manager_with_servers(vec![("office", false, Box::new(transport))]);
+
+        let first = manager.call_tool_result("office", "render", json!({})).await.unwrap();
+        let second = manager.call_tool_result("office", "render", json!({})).await.unwrap();
+
+        assert_eq!(*request_ids.lock().unwrap(), vec![10, 11]);
+        assert!(!first.is_error);
+        assert!(matches!(first.content[1], crate::protocol::McpContent::Image { .. }));
+        assert!(second.is_error);
     }
 }
