@@ -7,7 +7,8 @@ use serde_json::Value;
 use super::config::McpServerConfig;
 use super::manager::McpManager;
 use aion_protocol::events::ToolCategory;
-use aion_tools::Tool;
+use aion_tools::{Tool, ToolExecutionOutput};
+use aion_types::message::{ContentBlock, ImageUrl};
 use aion_types::tool::{JsonSchema, ToolResult};
 
 /// Wraps an MCP server tool as a local Tool trait implementation.
@@ -73,14 +74,49 @@ impl Tool for McpToolProxy {
     }
 
     async fn execute(&self, input: Value) -> ToolResult {
-        match self.manager.call_tool(&self.server_name, &self.tool_name, input).await {
-            Ok(content) => ToolResult {
-                content,
-                is_error: false,
-            },
-            Err(e) => ToolResult {
-                content: format!("MCP tool error: {}", e),
-                is_error: true,
+        let output = self.execute_with_follow_up(input).await;
+        output.result
+    }
+
+    async fn execute_with_follow_up(&self, input: Value) -> ToolExecutionOutput {
+        match self
+            .manager
+            .call_tool_result(&self.server_name, &self.tool_name, input)
+            .await
+        {
+            Ok(result) => {
+                let is_error = result.is_error;
+                let mut text = Vec::new();
+                let mut follow_up_blocks = Vec::new();
+                for content in result.content {
+                    match content {
+                        super::protocol::McpContent::Text { text: value } => text.push(value),
+                        super::protocol::McpContent::Image { data, mime_type } => {
+                            follow_up_blocks.push(ContentBlock::Image {
+                                image_url: ImageUrl {
+                                    url: format!("data:{mime_type};base64,{data}"),
+                                },
+                            });
+                        }
+                        super::protocol::McpContent::Resource { resource } => {
+                            text.push(serde_json::to_string(&resource).unwrap_or_else(|_| "[resource]".into()));
+                        }
+                    }
+                }
+                ToolExecutionOutput {
+                    result: ToolResult {
+                        content: text.join("\n"),
+                        is_error,
+                    },
+                    follow_up_blocks: if is_error { Vec::new() } else { follow_up_blocks },
+                }
+            }
+            Err(error) => ToolExecutionOutput {
+                result: ToolResult {
+                    content: format!("MCP tool error: {error}"),
+                    is_error: true,
+                },
+                follow_up_blocks: Vec::new(),
             },
         }
     }

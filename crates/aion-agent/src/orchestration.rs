@@ -20,6 +20,50 @@ pub struct ToolCallOutcome {
     pub follow_up_blocks: Vec<ContentBlock>,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ToolExecutionMode {
+    Terminal,
+    Protocol,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ToolExecutionSource<'a> {
+    mode: ToolExecutionMode,
+    message_id: Option<&'a str>,
+}
+
+impl ToolExecutionMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Terminal => "terminal",
+            Self::Protocol => "protocol",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ToolExecutionContext {
+    execution_id: String,
+    call_id: String,
+    message_id: Option<String>,
+    mode: ToolExecutionMode,
+}
+
+impl ToolExecutionContext {
+    fn new(call_id: &str, message_id: Option<&str>, mode: ToolExecutionMode) -> Self {
+        Self {
+            execution_id: format!("tool_exec_{}", uuid::Uuid::now_v7().simple()),
+            call_id: call_id.to_owned(),
+            message_id: message_id.map(str::to_owned),
+            mode,
+        }
+    }
+}
+
+fn tool_error(code: &str, message: impl AsRef<str>) -> String {
+    format!("[tool_error:{code}] {}", message.as_ref())
+}
+
 impl std::ops::Deref for ToolCallOutcome {
     type Target = Vec<ContentBlock>;
     fn deref(&self) -> &Self::Target {
@@ -95,6 +139,10 @@ pub(crate) async fn execute_tool_calls_with_output_limit(
                         compaction_level,
                         toon_enabled,
                         tool_output_max_bytes,
+                        ToolExecutionSource {
+                            mode: ToolExecutionMode::Terminal,
+                            message_id: None,
+                        },
                     )
                 })
                 .collect();
@@ -125,6 +173,10 @@ pub(crate) async fn execute_tool_calls_with_output_limit(
                                 compaction_level,
                                 toon_enabled,
                                 tool_output_max_bytes,
+                                ToolExecutionSource {
+                                    mode: ToolExecutionMode::Terminal,
+                                    message_id: None,
+                                },
                             )
                             .await;
                         }
@@ -175,7 +227,7 @@ fn confirm_call(
         ConfirmResult::Approved => Ok(None),
         ConfirmResult::Denied => Ok(Some(ContentBlock::ToolResult {
             tool_use_id: id.clone(),
-            content: "Tool execution denied by user".to_string(),
+            content: tool_error("user_denied", "Tool execution denied by user"),
             is_error: true,
         })),
         ConfirmResult::Quit => Err(ExecutionControl::Quit),
@@ -189,13 +241,23 @@ async fn execute_single(
     compaction_level: aion_compact::CompactLevel,
     toon_enabled: bool,
     tool_output_max_bytes: usize,
+    source: ToolExecutionSource<'_>,
 ) -> (ContentBlock, Option<ContextModifier>, Vec<ContentBlock>) {
     let ContentBlock::ToolUse { id, name, input, .. } = call else {
         unreachable!("execute_single called with non-ToolUse block")
     };
 
+    let context = ToolExecutionContext::new(id, source.message_id, source.mode);
     let start = std::time::Instant::now();
-    tracing::info!(target: "aion_agent", tool = %name, call_id = %id, "tool execution started");
+    tracing::info!(
+        target: "aion_agent",
+        tool = %name,
+        call_id = %context.call_id,
+        execution_id = %context.execution_id,
+        execution_mode = context.mode.as_str(),
+        message_id = context.message_id.as_deref().unwrap_or(""),
+        "tool execution started"
+    );
 
     // Run pre-tool-use hooks
     if let Some(hook_engine) = hooks
@@ -204,7 +266,7 @@ async fn execute_single(
         return (
             ContentBlock::ToolResult {
                 tool_use_id: id.clone(),
-                content: format!("Blocked by hook: {}", e),
+                content: tool_error("hook_blocked", format!("Blocked by hook: {e}")),
                 is_error: true,
             },
             None,
@@ -262,7 +324,7 @@ async fn execute_single(
         }
         None => (
             ToolResult {
-                content: format!("Unknown tool: {}", name),
+                content: tool_error("unknown_tool", format!("Unknown tool: {name}")),
                 is_error: true,
             },
             None,
@@ -279,7 +341,14 @@ async fn execute_single(
     }
 
     let duration_ms = start.elapsed().as_millis() as u64;
-    tracing::info!(target: "aion_agent", duration_ms, success = !result.is_error, "tool execution completed");
+    tracing::info!(
+        target: "aion_agent",
+        execution_id = %context.execution_id,
+        call_id = %context.call_id,
+        duration_ms,
+        success = !result.is_error,
+        "tool execution completed"
+    );
 
     (
         ContentBlock::ToolResult {
@@ -378,7 +447,7 @@ pub(crate) async fn execute_tool_calls_with_approval_and_output_limit(
                     });
                     results.push(ContentBlock::ToolResult {
                         tool_use_id: id.clone(),
-                        content: format!("Tool denied: {reason}"),
+                        content: tool_error("user_denied", format!("Tool denied: {reason}")),
                         is_error: true,
                     });
                     modifiers.push(None);
@@ -411,6 +480,10 @@ pub(crate) async fn execute_tool_calls_with_approval_and_output_limit(
                 compaction_level,
                 toon_enabled,
                 tool_output_max_bytes,
+                ToolExecutionSource {
+                    mode: ToolExecutionMode::Protocol,
+                    message_id: Some(msg_id),
+                },
             )
             .await;
         }

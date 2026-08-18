@@ -1,8 +1,23 @@
-use super::ToolPolicy;
+use super::{ToolGateDecision, ToolGateDenial, ToolPolicy};
 
 #[test]
 fn unrestricted_policy_allows_every_tool() {
     assert!(ToolPolicy::Unrestricted.allows("ExecCommand"));
+}
+
+#[test]
+fn denied_gate_cannot_be_reallowed() {
+    let denied = ToolGateDecision::Deny(ToolGateDenial::Policy);
+
+    assert_eq!(denied.and(ToolGateDecision::Allow), denied);
+}
+
+#[test]
+fn later_denial_tightens_an_allowed_gate() {
+    let capability_denied = ToolGateDecision::Deny(ToolGateDenial::Capability);
+
+    assert_eq!(ToolGateDecision::Allow.and(capability_denied), capability_denied);
+    assert!(capability_denied.is_denied());
 }
 
 #[test]

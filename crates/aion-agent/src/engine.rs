@@ -29,7 +29,7 @@ use crate::tool_call::{
     ToolCallMalformedFingerprint, merge_tool_results, tool_call_failure_fingerprint, tool_call_malformed_fingerprint,
     tool_call_malformed_reason,
 };
-use crate::tool_policy::ToolPolicy;
+use crate::tool_policy::{ToolGateDecision, ToolGateDenial, ToolPolicy};
 use crate::turn::{FinalizationReason, ToolLoopWarning, TurnGuardAction, TurnGuards, TurnKind, TurnOutcome};
 use aion_compact::CompactLevel;
 use aion_config::compact::CompactConfig;
@@ -740,7 +740,16 @@ impl AgentEngine {
                     .tools
                     .get(name)
                     .is_some_and(|tool| tool.requires_image_input() && !self.compat.image_input().supports_images());
-                (!self.tool_policy.allows(name) || capability_denied).then(|| name.clone())
+                let capability_gate = if capability_denied {
+                    ToolGateDecision::Deny(ToolGateDenial::Capability)
+                } else {
+                    ToolGateDecision::Allow
+                };
+                self.tool_policy
+                    .decision(name)
+                    .and(capability_gate)
+                    .is_denied()
+                    .then(|| name.clone())
             })
             .collect();
         let executable_tool_calls: Vec<_> = tool_calls
