@@ -250,8 +250,10 @@ mod tests {
             aion_compact::CompactLevel::Off,
             false,
             10_000,
-            ToolExecutionMode::Interactive,
-            None,
+            ToolExecutionSource {
+                mode: ToolExecutionMode::Terminal,
+                message_id: None,
+            },
         )
         .await;
         assert!(follow_up_blocks.is_empty());
@@ -281,8 +283,10 @@ mod tests {
             aion_compact::CompactLevel::Off,
             false,
             10_000,
-            ToolExecutionMode::Interactive,
-            None,
+            ToolExecutionSource {
+                mode: ToolExecutionMode::Terminal,
+                message_id: None,
+            },
         )
         .await;
         assert!(follow_up_blocks.is_empty());
@@ -311,8 +315,10 @@ mod tests {
             aion_compact::CompactLevel::Off,
             false,
             10_000,
-            ToolExecutionMode::Interactive,
-            None,
+            ToolExecutionSource {
+                mode: ToolExecutionMode::Terminal,
+                message_id: None,
+            },
         )
         .await;
         assert!(follow_up_blocks.is_empty());
@@ -340,8 +346,10 @@ mod tests {
             aion_compact::CompactLevel::Off,
             false,
             10_000,
-            ToolExecutionMode::Interactive,
-            None,
+            ToolExecutionSource {
+                mode: ToolExecutionMode::Terminal,
+                message_id: None,
+            },
         )
         .await;
         assert!(follow_up_blocks.is_empty());

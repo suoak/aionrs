@@ -26,6 +26,12 @@ enum ToolExecutionMode {
     Protocol,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ToolExecutionSource<'a> {
+    mode: ToolExecutionMode,
+    message_id: Option<&'a str>,
+}
+
 impl ToolExecutionMode {
     fn as_str(self) -> &'static str {
         match self {
@@ -133,8 +139,10 @@ pub(crate) async fn execute_tool_calls_with_output_limit(
                         compaction_level,
                         toon_enabled,
                         tool_output_max_bytes,
-                        ToolExecutionMode::Terminal,
-                        None,
+                        ToolExecutionSource {
+                            mode: ToolExecutionMode::Terminal,
+                            message_id: None,
+                        },
                     )
                 })
                 .collect();
@@ -165,8 +173,10 @@ pub(crate) async fn execute_tool_calls_with_output_limit(
                                 compaction_level,
                                 toon_enabled,
                                 tool_output_max_bytes,
-                                ToolExecutionMode::Terminal,
-                                None,
+                                ToolExecutionSource {
+                                    mode: ToolExecutionMode::Terminal,
+                                    message_id: None,
+                                },
                             )
                             .await;
                         }
@@ -231,14 +241,13 @@ async fn execute_single(
     compaction_level: aion_compact::CompactLevel,
     toon_enabled: bool,
     tool_output_max_bytes: usize,
-    mode: ToolExecutionMode,
-    message_id: Option<&str>,
+    source: ToolExecutionSource<'_>,
 ) -> (ContentBlock, Option<ContextModifier>, Vec<ContentBlock>) {
     let ContentBlock::ToolUse { id, name, input, .. } = call else {
         unreachable!("execute_single called with non-ToolUse block")
     };
 
-    let context = ToolExecutionContext::new(id, message_id, mode);
+    let context = ToolExecutionContext::new(id, source.message_id, source.mode);
     let start = std::time::Instant::now();
     tracing::info!(
         target: "aion_agent",
@@ -471,8 +480,10 @@ pub(crate) async fn execute_tool_calls_with_approval_and_output_limit(
                 compaction_level,
                 toon_enabled,
                 tool_output_max_bytes,
-                ToolExecutionMode::Protocol,
-                Some(msg_id),
+                ToolExecutionSource {
+                    mode: ToolExecutionMode::Protocol,
+                    message_id: Some(msg_id),
+                },
             )
             .await;
         }

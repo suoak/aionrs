@@ -736,12 +736,15 @@ impl AgentEngine {
                 let ContentBlock::ToolUse { name, .. } = call else {
                     return None;
                 };
-                let capability_gate = self
+                let capability_denied = self
                     .tools
                     .get(name)
-                    .is_some_and(|tool| tool.requires_image_input() && !self.compat.image_input().supports_images())
-                    .then_some(ToolGateDecision::Deny(ToolGateDenial::Capability))
-                    .unwrap_or(ToolGateDecision::Allow);
+                    .is_some_and(|tool| tool.requires_image_input() && !self.compat.image_input().supports_images());
+                let capability_gate = if capability_denied {
+                    ToolGateDecision::Deny(ToolGateDenial::Capability)
+                } else {
+                    ToolGateDecision::Allow
+                };
                 self.tool_policy
                     .decision(name)
                     .and(capability_gate)
