@@ -17,8 +17,6 @@ pub enum ToolPolicy {
 pub(crate) enum ToolGateDenial {
     Policy,
     Capability,
-    Approval,
-    Hook,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

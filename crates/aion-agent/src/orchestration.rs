@@ -46,7 +46,7 @@ struct ToolExecutionContext {
 impl ToolExecutionContext {
     fn new(call_id: &str, message_id: Option<&str>, mode: ToolExecutionMode) -> Self {
         Self {
-            execution_id: format!("tool_exec_{}", uuid::Uuid::new_v4().simple()),
+            execution_id: format!("tool_exec_{}", uuid::Uuid::now_v7().simple()),
             call_id: call_id.to_owned(),
             message_id: message_id.map(str::to_owned),
             mode,
