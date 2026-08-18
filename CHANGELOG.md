@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.15](https://github.com/suoak/aionrs/compare/v0.2.14...v0.2.15) (2026-08-18)
+
+
+### Features
+
+* **tools:** enforce monotonic execution pipeline ([#9](https://github.com/suoak/aionrs/issues/9)) ([89478ef](https://github.com/suoak/aionrs/commit/89478efc3a644c7ddd2d1b792b34b601dc5c6cd2))
+
 ## [0.2.14](https://github.com/suoak/aionrs/compare/v0.2.13...v0.2.14) (2026-08-15)
 
 
