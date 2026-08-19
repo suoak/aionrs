@@ -10,6 +10,7 @@ pub mod context;
 pub mod context_usage;
 pub mod engine;
 pub mod error;
+pub mod injection;
 pub mod orchestration;
 pub mod output;
 pub mod plan;

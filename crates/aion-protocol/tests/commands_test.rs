@@ -20,6 +20,10 @@ use rstest::rstest;
 )]
 #[case(r#"{"type":"stop"}"#, ProtocolCommand::Stop)]
 #[case(
+    r#"{"type":"inject","input_id":"input-1","content":"more context"}"#,
+    ProtocolCommand::Inject { input_id: "input-1".into(), content: "more context".into() }
+)]
+#[case(
     r#"{"type":"init_history","text":"history"}"#,
     ProtocolCommand::InitHistory {
         text: "history".to_string(),

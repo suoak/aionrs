@@ -11,6 +11,7 @@ mod tests {
             version: "0.1.0".to_string(),
             session_id: Some("abc123".to_string()),
             capabilities: Capabilities {
+                inject: true,
                 tool_approval: true,
                 image_input: ImageInputCapability::Supported,
                 thinking: true,
@@ -32,6 +33,7 @@ mod tests {
             version: "0.1.0".to_string(),
             session_id: None,
             capabilities: Capabilities {
+                inject: true,
                 tool_approval: true,
                 image_input: ImageInputCapability::Unknown,
                 thinking: true,
@@ -56,6 +58,30 @@ mod tests {
         assert_eq!(json["type"], "text_delta");
         assert_eq!(json["text"], "hello");
         assert_eq!(json["msg_id"], "m1");
+    }
+
+    #[test]
+    fn input_lifecycle_events_are_structured() {
+        let accepted = serde_json::to_value(ProtocolEvent::InputAccepted {
+            input_id: "input-1".into(),
+        })
+        .unwrap();
+        assert_eq!(accepted, json!({"type": "input_accepted", "input_id": "input-1"}));
+
+        let applied = serde_json::to_value(ProtocolEvent::InputApplied {
+            input_id: "input-1".into(),
+            turn_id: Some("turn-1".into()),
+        })
+        .unwrap();
+        assert_eq!(applied["type"], "input_applied");
+        assert_eq!(applied["turn_id"], "turn-1");
+
+        let rejected = serde_json::to_value(ProtocolEvent::InputRejected {
+            input_id: "input-2".into(),
+            error_code: "too_late".into(),
+        })
+        .unwrap();
+        assert_eq!(rejected["error_code"], "too_late");
     }
 
     #[test]
@@ -139,6 +165,7 @@ mod tests {
             version: "0.2.0".to_string(),
             session_id: Some("abc".to_string()),
             capabilities: Capabilities {
+                inject: true,
                 tool_approval: true,
                 image_input: ImageInputCapability::Supported,
                 thinking: true,
@@ -183,6 +210,7 @@ mod tests {
     fn test_config_changed_event_serialization() {
         let event = ProtocolEvent::ConfigChanged {
             capabilities: Capabilities {
+                inject: true,
                 tool_approval: true,
                 image_input: ImageInputCapability::Unsupported,
                 thinking: false,

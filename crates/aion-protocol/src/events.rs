@@ -16,6 +16,18 @@ pub enum ProtocolEvent {
     StreamStart {
         msg_id: String,
     },
+    InputAccepted {
+        input_id: String,
+    },
+    InputApplied {
+        input_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+    },
+    InputRejected {
+        input_id: String,
+        error_code: String,
+    },
     TextDelta {
         text: String,
         msg_id: String,
@@ -75,6 +87,7 @@ pub enum ProtocolEvent {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Capabilities {
+    pub inject: bool,
     pub tool_approval: bool,
     pub image_input: ImageInputCapability,
     pub thinking: bool,

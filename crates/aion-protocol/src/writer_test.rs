@@ -19,6 +19,7 @@ mod tests {
             version: "0.1.0".to_string(),
             session_id: None,
             capabilities: Capabilities {
+                inject: true,
                 tool_approval: true,
                 image_input: ImageInputCapability::Unknown,
                 thinking: false,
