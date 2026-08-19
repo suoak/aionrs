@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.16](https://github.com/suoak/aionrs/compare/v0.2.15...v0.2.16) (2026-08-19)
+
+
+### Features
+
+* **agent:** add durable input injection lifecycle ([#11](https://github.com/suoak/aionrs/issues/11)) ([1f6dfba](https://github.com/suoak/aionrs/commit/1f6dfba1c36b7e18dc4f2375f55a46d38d74ccdc))
+
 ## [0.2.15](https://github.com/suoak/aionrs/compare/v0.2.14...v0.2.15) (2026-08-18)
 
 
