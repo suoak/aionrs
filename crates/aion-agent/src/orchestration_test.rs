@@ -246,14 +246,11 @@ mod tests {
         let (result, _, follow_up_blocks) = execute_single(
             &registry,
             &call,
+            ToolExecutionContext::new("call_1", None, ToolExecutionMode::Terminal),
             None,
             aion_compact::CompactLevel::Off,
             false,
             10_000,
-            ToolExecutionSource {
-                mode: ToolExecutionMode::Terminal,
-                message_id: None,
-            },
         )
         .await;
         assert!(follow_up_blocks.is_empty());
@@ -279,14 +276,11 @@ mod tests {
         let (result, _, follow_up_blocks) = execute_single(
             &registry,
             &call,
+            ToolExecutionContext::new("call_2", None, ToolExecutionMode::Terminal),
             None,
             aion_compact::CompactLevel::Off,
             false,
             10_000,
-            ToolExecutionSource {
-                mode: ToolExecutionMode::Terminal,
-                message_id: None,
-            },
         )
         .await;
         assert!(follow_up_blocks.is_empty());
@@ -311,14 +305,11 @@ mod tests {
         let (result, _, follow_up_blocks) = execute_single(
             &registry,
             &call,
+            ToolExecutionContext::new("call_3", None, ToolExecutionMode::Terminal),
             None,
             aion_compact::CompactLevel::Off,
             false,
             10_000,
-            ToolExecutionSource {
-                mode: ToolExecutionMode::Terminal,
-                message_id: None,
-            },
         )
         .await;
         assert!(follow_up_blocks.is_empty());
@@ -342,14 +333,11 @@ mod tests {
         let (result, _, follow_up_blocks) = execute_single(
             &registry,
             &call,
+            ToolExecutionContext::new("call_4", None, ToolExecutionMode::Terminal),
             None,
             aion_compact::CompactLevel::Off,
             false,
             10_000,
-            ToolExecutionSource {
-                mode: ToolExecutionMode::Terminal,
-                message_id: None,
-            },
         )
         .await;
         assert!(follow_up_blocks.is_empty());

@@ -220,7 +220,7 @@ pub(crate) fn merge_tool_results(
             tool_results.push(ContentBlock::ToolResult {
                 tool_use_id: id.clone(),
                 content: format!(
-                    "Tool '{denied_name}' is not available in this runtime. Use an available tool or answer in text."
+                    "[tool_error:policy_denied] Tool '{denied_name}' is not available in this runtime. Use an available tool or answer in text."
                 ),
                 is_error: true,
             });

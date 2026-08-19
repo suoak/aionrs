@@ -26,12 +26,6 @@ enum ToolExecutionMode {
     Protocol,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct ToolExecutionSource<'a> {
-    mode: ToolExecutionMode,
-    message_id: Option<&'a str>,
-}
-
 impl ToolExecutionMode {
     fn as_str(self) -> &'static str {
         match self {
@@ -62,6 +56,13 @@ impl ToolExecutionContext {
 
 fn tool_error(code: &str, message: impl AsRef<str>) -> String {
     format!("[tool_error:{code}] {}", message.as_ref())
+}
+
+fn tool_call_id(call: &ContentBlock) -> &str {
+    match call {
+        ContentBlock::ToolUse { id, .. } => id,
+        _ => unreachable!("tool execution received a non-tool-use block"),
+    }
 }
 
 impl std::ops::Deref for ToolCallOutcome {
@@ -135,14 +136,11 @@ pub(crate) async fn execute_tool_calls_with_output_limit(
                     execute_single(
                         registry,
                         call,
+                        ToolExecutionContext::new(tool_call_id(call), None, ToolExecutionMode::Terminal),
                         hooks_shared,
                         compaction_level,
                         toon_enabled,
                         tool_output_max_bytes,
-                        ToolExecutionSource {
-                            mode: ToolExecutionMode::Terminal,
-                            message_id: None,
-                        },
                     )
                 })
                 .collect();
@@ -169,14 +167,11 @@ pub(crate) async fn execute_tool_calls_with_output_limit(
                             (block, modifier, blocks) = execute_single(
                                 registry,
                                 call,
+                                ToolExecutionContext::new(tool_call_id(call), None, ToolExecutionMode::Terminal),
                                 hooks_shared,
                                 compaction_level,
                                 toon_enabled,
                                 tool_output_max_bytes,
-                                ToolExecutionSource {
-                                    mode: ToolExecutionMode::Terminal,
-                                    message_id: None,
-                                },
                             )
                             .await;
                         }
@@ -237,17 +232,16 @@ fn confirm_call(
 async fn execute_single(
     registry: &ToolRegistry,
     call: &ContentBlock,
+    context: ToolExecutionContext,
     hooks: Option<&HookEngine>,
     compaction_level: aion_compact::CompactLevel,
     toon_enabled: bool,
     tool_output_max_bytes: usize,
-    source: ToolExecutionSource<'_>,
 ) -> (ContentBlock, Option<ContextModifier>, Vec<ContentBlock>) {
     let ContentBlock::ToolUse { id, name, input, .. } = call else {
         unreachable!("execute_single called with non-ToolUse block")
     };
 
-    let context = ToolExecutionContext::new(id, source.message_id, source.mode);
     let start = std::time::Instant::now();
     tracing::info!(
         target: "aion_agent",
@@ -415,6 +409,7 @@ pub(crate) async fn execute_tool_calls_with_approval_and_output_limit(
         };
 
         let tool = registry.get(name);
+        let context = ToolExecutionContext::new(id, Some(msg_id), ToolExecutionMode::Protocol);
         let category = tool.map(|t| t.category()).unwrap_or(ToolCategory::Exec);
         let description = tool.map(|t| t.describe(input)).unwrap_or_default();
 
@@ -428,6 +423,7 @@ pub(crate) async fn execute_tool_calls_with_approval_and_output_limit(
             let _ = writer.emit(&ProtocolEvent::ToolRequest {
                 msg_id: msg_id.to_string(),
                 call_id: id.clone(),
+                execution_id: context.execution_id.clone(),
                 tool: ToolInfo {
                     name: name.clone(),
                     category,
@@ -443,6 +439,7 @@ pub(crate) async fn execute_tool_calls_with_approval_and_output_limit(
                     let _ = writer.emit(&ProtocolEvent::ToolCancelled {
                         msg_id: msg_id.to_string(),
                         call_id: id.clone(),
+                        execution_id: context.execution_id.clone(),
                         reason: reason.clone(),
                     });
                     results.push(ContentBlock::ToolResult {
@@ -464,6 +461,7 @@ pub(crate) async fn execute_tool_calls_with_approval_and_output_limit(
         let _ = writer.emit(&ProtocolEvent::ToolRunning {
             msg_id: msg_id.to_string(),
             call_id: id.clone(),
+            execution_id: context.execution_id.clone(),
             tool_name: name.clone(),
         });
 
@@ -476,14 +474,11 @@ pub(crate) async fn execute_tool_calls_with_approval_and_output_limit(
             (result, modifier, blocks) = execute_single(
                 registry,
                 call,
+                context.clone(),
                 hooks_shared,
                 compaction_level,
                 toon_enabled,
                 tool_output_max_bytes,
-                ToolExecutionSource {
-                    mode: ToolExecutionMode::Protocol,
-                    message_id: Some(msg_id),
-                },
             )
             .await;
         }
@@ -498,6 +493,7 @@ pub(crate) async fn execute_tool_calls_with_approval_and_output_limit(
             let _ = writer.emit(&ProtocolEvent::ToolResult {
                 msg_id: msg_id.to_string(),
                 call_id: id.clone(),
+                execution_id: context.execution_id.clone(),
                 tool_name: name.clone(),
                 status,
                 output: content.clone(),
