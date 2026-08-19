@@ -18,7 +18,8 @@ use crate::context_usage::{
 use crate::error::AgentError;
 use crate::injection::InjectionHandle;
 use crate::orchestration::{
-    ExecutionControl, execute_tool_calls_with_approval_and_output_limit, execute_tool_calls_with_output_limit,
+    ExecutionControl, ToolExecutionScope, execute_tool_calls_with_approval_and_output_limit,
+    execute_tool_calls_with_output_limit,
 };
 use crate::output::OutputSink;
 use crate::plan::prompt::plan_mode_instructions;
@@ -625,7 +626,7 @@ impl AgentEngine {
                 tool_call_malformed_fingerprint,
                 tool_call_failure_fingerprint,
                 all_tool_results_error,
-            } = self.execute_tool_round(&tool_calls).await?;
+            } = self.execute_tool_round(&tool_calls, guards.counted_turns()).await?;
 
             // Apply any context modifiers from skill executions before the next turn.
             self.apply_context_modifiers(&tool_modifiers);
@@ -760,7 +761,17 @@ impl AgentEngine {
     ///
     /// A `Quit` from tool execution is surfaced as `AgentError::UserAborted`
     /// after saving the session.
-    async fn execute_tool_round(&mut self, tool_calls: &[ContentBlock]) -> Result<ToolRoundOutput, AgentError> {
+    async fn execute_tool_round(
+        &mut self,
+        tool_calls: &[ContentBlock],
+        step: usize,
+    ) -> Result<ToolRoundOutput, AgentError> {
+        let execution_scope = ToolExecutionScope {
+            session_id: self.current_session.as_ref().map(|session| session.id.clone()),
+            turn_id: self.current_turn_id.clone(),
+            step,
+            image_input_supported: self.compat.image_input().supports_images(),
+        };
         let tool_call_malformed_reasons: Vec<_> = tool_calls
             .iter()
             .map(|call| {
@@ -826,6 +837,7 @@ impl AgentEngine {
                 self.compact_level,
                 self.toon_enabled,
                 self.compact_config.tool_output_max_bytes,
+                execution_scope.clone(),
             )
             .await
             {
@@ -845,6 +857,7 @@ impl AgentEngine {
                 self.compact_level,
                 self.toon_enabled,
                 self.compact_config.tool_output_max_bytes,
+                execution_scope,
             )
             .await
             {

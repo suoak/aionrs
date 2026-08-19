@@ -3,6 +3,26 @@ use super::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_execution_context_captures_scope_and_sources() {
+        let scope = ToolExecutionScope {
+            session_id: Some("session-1".into()),
+            turn_id: Some("turn-1".into()),
+            step: 3,
+            image_input_supported: true,
+        };
+        let context =
+            ToolExecutionContext::new("call-1", Some("message-1"), ToolExecutionMode::Protocol, &scope, "host");
+
+        assert_eq!(context.session_id.as_deref(), Some("session-1"));
+        assert_eq!(context.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(context.step, 3);
+        assert!(context.capability_snapshot.image_input_supported);
+        assert_eq!(context.policy_source, "runtime_tool_policy");
+        assert_eq!(context.approval_source, "host");
+        assert!(!context.cancellation.is_cancelled());
+    }
     use serde_json::json;
 
     // -- truncate_display -----------------------------------------------------
@@ -246,7 +266,13 @@ mod tests {
         let (result, _, follow_up_blocks) = execute_single(
             &registry,
             &call,
-            ToolExecutionContext::new("call_1", None, ToolExecutionMode::Terminal),
+            ToolExecutionContext::new(
+                "call_1",
+                None,
+                ToolExecutionMode::Terminal,
+                &ToolExecutionScope::default(),
+                "interactive",
+            ),
             None,
             aion_compact::CompactLevel::Off,
             false,
@@ -276,7 +302,13 @@ mod tests {
         let (result, _, follow_up_blocks) = execute_single(
             &registry,
             &call,
-            ToolExecutionContext::new("call_2", None, ToolExecutionMode::Terminal),
+            ToolExecutionContext::new(
+                "call_2",
+                None,
+                ToolExecutionMode::Terminal,
+                &ToolExecutionScope::default(),
+                "interactive",
+            ),
             None,
             aion_compact::CompactLevel::Off,
             false,
@@ -305,7 +337,13 @@ mod tests {
         let (result, _, follow_up_blocks) = execute_single(
             &registry,
             &call,
-            ToolExecutionContext::new("call_3", None, ToolExecutionMode::Terminal),
+            ToolExecutionContext::new(
+                "call_3",
+                None,
+                ToolExecutionMode::Terminal,
+                &ToolExecutionScope::default(),
+                "interactive",
+            ),
             None,
             aion_compact::CompactLevel::Off,
             false,
@@ -333,7 +371,13 @@ mod tests {
         let (result, _, follow_up_blocks) = execute_single(
             &registry,
             &call,
-            ToolExecutionContext::new("call_4", None, ToolExecutionMode::Terminal),
+            ToolExecutionContext::new(
+                "call_4",
+                None,
+                ToolExecutionMode::Terminal,
+                &ToolExecutionScope::default(),
+                "interactive",
+            ),
             None,
             aion_compact::CompactLevel::Off,
             false,

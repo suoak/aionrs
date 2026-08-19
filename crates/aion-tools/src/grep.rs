@@ -126,6 +126,7 @@ async fn try_ripgrep(
     if case_insensitive {
         cmd.arg("-i");
     }
+    cmd.kill_on_drop(true);
 
     let output = cmd.output().await?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -173,6 +174,7 @@ async fn try_grep(pattern: &str, path: &str, case_insensitive: bool) -> ToolResu
         }
         c
     };
+    cmd.kill_on_drop(true);
 
     match cmd.output().await {
         Ok(output) => {

@@ -2857,7 +2857,7 @@ mod tests_tool_policy_enforcement {
         let mut engine = make_engine(Arc::clone(&read_executions), Arc::clone(&exec_executions));
         let calls = vec![tool_use("denied", "ExecCommand"), tool_use("allowed", "Read")];
 
-        let output = engine.execute_tool_round(&calls).await.unwrap();
+        let output = engine.execute_tool_round(&calls, 1).await.unwrap();
 
         assert_eq!(exec_executions.load(Ordering::SeqCst), 0);
         assert_eq!(read_executions.load(Ordering::SeqCst), 1);

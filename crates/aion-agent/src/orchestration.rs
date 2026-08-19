@@ -11,6 +11,7 @@ use aion_types::skill_types::ContextModifier;
 use aion_types::tool::ToolResult;
 
 use aion_tools::{registry::ToolRegistry, truncate_utf8};
+use tokio_util::sync::CancellationToken;
 
 /// The combined output of a tool execution batch: protocol content blocks
 /// paired with per-call context modifiers (None for non-skill tools).
@@ -38,17 +39,52 @@ impl ToolExecutionMode {
 #[derive(Debug, Clone)]
 struct ToolExecutionContext {
     execution_id: String,
+    session_id: Option<String>,
+    turn_id: Option<String>,
+    step: usize,
     call_id: String,
     message_id: Option<String>,
+    capability_snapshot: ToolCapabilitySnapshot,
+    cancellation: CancellationToken,
+    policy_source: &'static str,
+    approval_source: &'static str,
     mode: ToolExecutionMode,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ToolExecutionScope {
+    pub session_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub step: usize,
+    pub image_input_supported: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ToolCapabilitySnapshot {
+    image_input_supported: bool,
+}
+
 impl ToolExecutionContext {
-    fn new(call_id: &str, message_id: Option<&str>, mode: ToolExecutionMode) -> Self {
+    fn new(
+        call_id: &str,
+        message_id: Option<&str>,
+        mode: ToolExecutionMode,
+        scope: &ToolExecutionScope,
+        approval_source: &'static str,
+    ) -> Self {
         Self {
             execution_id: format!("tool_exec_{}", uuid::Uuid::now_v7().simple()),
+            session_id: scope.session_id.clone(),
+            turn_id: scope.turn_id.clone(),
+            step: scope.step,
             call_id: call_id.to_owned(),
             message_id: message_id.map(str::to_owned),
+            capability_snapshot: ToolCapabilitySnapshot {
+                image_input_supported: scope.image_input_supported,
+            },
+            cancellation: CancellationToken::new(),
+            policy_source: "runtime_tool_policy",
+            approval_source,
             mode,
         }
     }
@@ -95,6 +131,7 @@ pub async fn execute_tool_calls(
         compaction_level,
         toon_enabled,
         CompactConfig::default().tool_output_max_bytes,
+        ToolExecutionScope::default(),
     )
     .await
 }
@@ -108,6 +145,7 @@ pub(crate) async fn execute_tool_calls_with_output_limit(
     compaction_level: aion_compact::CompactLevel,
     toon_enabled: bool,
     tool_output_max_bytes: usize,
+    scope: ToolExecutionScope,
 ) -> Result<ToolCallOutcome, ExecutionControl> {
     let mut results = Vec::new();
     let mut modifiers = Vec::new();
@@ -136,7 +174,13 @@ pub(crate) async fn execute_tool_calls_with_output_limit(
                     execute_single(
                         registry,
                         call,
-                        ToolExecutionContext::new(tool_call_id(call), None, ToolExecutionMode::Terminal),
+                        ToolExecutionContext::new(
+                            tool_call_id(call),
+                            None,
+                            ToolExecutionMode::Terminal,
+                            &scope,
+                            "interactive",
+                        ),
                         hooks_shared,
                         compaction_level,
                         toon_enabled,
@@ -167,7 +211,13 @@ pub(crate) async fn execute_tool_calls_with_output_limit(
                             (block, modifier, blocks) = execute_single(
                                 registry,
                                 call,
-                                ToolExecutionContext::new(tool_call_id(call), None, ToolExecutionMode::Terminal),
+                                ToolExecutionContext::new(
+                                    tool_call_id(call),
+                                    None,
+                                    ToolExecutionMode::Terminal,
+                                    &scope,
+                                    "interactive",
+                                ),
                                 hooks_shared,
                                 compaction_level,
                                 toon_enabled,
@@ -250,6 +300,13 @@ async fn execute_single(
         execution_id = %context.execution_id,
         execution_mode = context.mode.as_str(),
         message_id = context.message_id.as_deref().unwrap_or(""),
+        session_id = context.session_id.as_deref().unwrap_or(""),
+        turn_id = context.turn_id.as_deref().unwrap_or(""),
+        step = context.step,
+        image_input_supported = context.capability_snapshot.image_input_supported,
+        policy_source = context.policy_source,
+        approval_source = context.approval_source,
+        cancelled = context.cancellation.is_cancelled(),
         "tool execution started"
     );
 
@@ -381,6 +438,7 @@ pub async fn execute_tool_calls_with_approval(
         compaction_level,
         toon_enabled,
         CompactConfig::default().tool_output_max_bytes,
+        ToolExecutionScope::default(),
     )
     .await
 }
@@ -398,6 +456,7 @@ pub(crate) async fn execute_tool_calls_with_approval_and_output_limit(
     compaction_level: aion_compact::CompactLevel,
     toon_enabled: bool,
     tool_output_max_bytes: usize,
+    scope: ToolExecutionScope,
 ) -> Result<ToolCallOutcome, ExecutionControl> {
     let mut results = Vec::new();
     let mut modifiers = Vec::new();
@@ -409,7 +468,6 @@ pub(crate) async fn execute_tool_calls_with_approval_and_output_limit(
         };
 
         let tool = registry.get(name);
-        let context = ToolExecutionContext::new(id, Some(msg_id), ToolExecutionMode::Protocol);
         let category = tool.map(|t| t.category()).unwrap_or(ToolCategory::Exec);
         let description = tool.map(|t| t.describe(input)).unwrap_or_default();
 
@@ -417,6 +475,13 @@ pub(crate) async fn execute_tool_calls_with_approval_and_output_limit(
         let needs_approval = !auto_approve
             && !allow_list.contains(&name.to_string())
             && !approval_manager.is_auto_approved(&category.to_string());
+        let context = ToolExecutionContext::new(
+            id,
+            Some(msg_id),
+            ToolExecutionMode::Protocol,
+            &scope,
+            if needs_approval { "host" } else { "automatic" },
+        );
 
         if needs_approval {
             // Emit tool_request and wait for approval
