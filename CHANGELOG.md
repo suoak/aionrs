@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.17](https://github.com/suoak/aionrs/compare/v0.2.16...v0.2.17) (2026-08-19)
+
+
+### Features
+
+* **tools:** correlate execution and cancel mcp calls ([#13](https://github.com/suoak/aionrs/issues/13)) ([f672f51](https://github.com/suoak/aionrs/commit/f672f51e2bb784f2b212b4c49bec836d3353780c))
+
 ## [0.2.16](https://github.com/suoak/aionrs/compare/v0.2.15...v0.2.16) (2026-08-19)
 
 
