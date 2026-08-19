@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.18](https://github.com/suoak/aionrs/compare/v0.2.17...v0.2.18) (2026-08-19)
+
+
+### Features
+
+* **tools:** propagate typed execution context ([#15](https://github.com/suoak/aionrs/issues/15)) ([3144c2b](https://github.com/suoak/aionrs/commit/3144c2b9019fcfbf4b54dad88171d3733a51f71b))
+
 ## [0.2.17](https://github.com/suoak/aionrs/compare/v0.2.16...v0.2.17) (2026-08-19)
 
 
