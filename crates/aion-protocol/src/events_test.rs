@@ -89,6 +89,7 @@ mod tests {
         let event = ProtocolEvent::ToolRequest {
             msg_id: "m1".to_string(),
             call_id: "c1".to_string(),
+            execution_id: "exec-1".to_string(),
             tool: ToolInfo {
                 name: "ExecCommand".to_string(),
                 category: ToolCategory::Exec,
@@ -98,6 +99,7 @@ mod tests {
         };
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "tool_request");
+        assert_eq!(json["execution_id"], "exec-1");
         assert_eq!(json["tool"]["category"], "exec");
     }
 
@@ -106,6 +108,7 @@ mod tests {
         let event = ProtocolEvent::ToolResult {
             msg_id: "m1".to_string(),
             call_id: "c1".to_string(),
+            execution_id: "exec-1".to_string(),
             tool_name: "Read".to_string(),
             status: ToolStatus::Success,
             output: "file content".to_string(),

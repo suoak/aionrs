@@ -75,6 +75,31 @@ mod tests {
         request_ids: Arc<Mutex<Vec<u64>>>,
     }
 
+    struct BlockingTransport {
+        started: Arc<tokio::sync::Notify>,
+        notifications: Arc<Mutex<Vec<serde_json::Value>>>,
+    }
+
+    #[async_trait]
+    impl McpTransport for BlockingTransport {
+        async fn request(&self, _req: &JsonRpcRequest) -> Result<JsonRpcResponse, McpError> {
+            self.started.notify_one();
+            std::future::pending().await
+        }
+
+        async fn notify(&self, request: &JsonRpcRequest) -> Result<(), McpError> {
+            self.notifications
+                .lock()
+                .unwrap()
+                .push(serde_json::to_value(request).unwrap());
+            Ok(())
+        }
+
+        async fn close(&self) -> Result<(), McpError> {
+            Ok(())
+        }
+    }
+
     #[async_trait]
     impl McpTransport for RecordingTransport {
         async fn request(&self, req: &JsonRpcRequest) -> Result<JsonRpcResponse, McpError> {
@@ -123,7 +148,7 @@ mod tests {
     fn successful_test_server(name: &str) -> McpServer {
         McpServer {
             name: name.to_string(),
-            transport: Box::new(MockTransport::new(vec![])),
+            transport: Arc::new(MockTransport::new(vec![])),
             tools: vec![],
             supports_resources: false,
         }
@@ -438,5 +463,37 @@ mod tests {
         assert!(!first.is_error);
         assert!(matches!(first.content[1], crate::protocol::McpContent::Image { .. }));
         assert!(second.is_error);
+    }
+
+    #[tokio::test]
+    async fn dropping_tool_call_sends_mcp_cancellation_notification() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        let manager = make_manager_with_servers(vec![(
+            "office",
+            false,
+            Box::new(BlockingTransport {
+                started: Arc::clone(&started),
+                notifications: Arc::clone(&notifications),
+            }),
+        )]);
+        let task = tokio::spawn(async move { manager.call_tool_result("office", "render", json!({})).await });
+        started.notified().await;
+        task.abort();
+        let _ = task.await;
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !notifications.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let notification = &notifications.lock().unwrap()[0];
+        assert_eq!(notification["method"], "notifications/cancelled");
+        assert_eq!(notification["params"]["requestId"], 10);
     }
 }

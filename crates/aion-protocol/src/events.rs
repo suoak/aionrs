@@ -39,16 +39,19 @@ pub enum ProtocolEvent {
     ToolRequest {
         msg_id: String,
         call_id: String,
+        execution_id: String,
         tool: ToolInfo,
     },
     ToolRunning {
         msg_id: String,
         call_id: String,
+        execution_id: String,
         tool_name: String,
     },
     ToolResult {
         msg_id: String,
         call_id: String,
+        execution_id: String,
         tool_name: String,
         status: ToolStatus,
         output: String,
@@ -59,6 +62,7 @@ pub enum ProtocolEvent {
     ToolCancelled {
         msg_id: String,
         call_id: String,
+        execution_id: String,
         reason: String,
     },
     StreamEnd {

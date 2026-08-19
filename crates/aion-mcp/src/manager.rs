@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::future::Future;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -22,10 +23,55 @@ const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 30_000;
 struct McpServer {
     #[allow(dead_code)]
     name: String,
-    transport: Box<dyn McpTransport>,
+    transport: Arc<dyn McpTransport>,
     tools: Vec<McpToolDef>,
     /// Whether the server declared resources capability in its initialize response
     supports_resources: bool,
+}
+
+struct McpRequestCancellation {
+    transport: Arc<dyn McpTransport>,
+    request_id: u64,
+    armed: bool,
+}
+
+impl McpRequestCancellation {
+    fn new(transport: Arc<dyn McpTransport>, request_id: u64) -> Self {
+        Self {
+            transport,
+            request_id,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for McpRequestCancellation {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let transport = Arc::clone(&self.transport);
+        let request_id = self.request_id;
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        runtime.spawn(async move {
+            let notification = JsonRpcRequest::notification(
+                "notifications/cancelled",
+                Some(json!({
+                    "requestId": request_id,
+                    "reason": "tool execution future cancelled"
+                })),
+            );
+            if let Err(error) = transport.notify(&notification).await {
+                tracing::debug!(target: "aion_mcp", request_id, error = %error, "failed to notify MCP server of cancellation");
+            }
+        });
+    }
 }
 
 /// Manages connections to multiple MCP servers
@@ -121,7 +167,7 @@ impl McpManager {
         let empty_map = HashMap::new();
 
         // 1. Create transport
-        let transport: Box<dyn McpTransport> = match config.transport {
+        let transport: Arc<dyn McpTransport> = match config.transport {
             TransportType::Stdio => {
                 let command = config
                     .command
@@ -129,7 +175,7 @@ impl McpManager {
                     .ok_or_else(|| McpError::InitFailed("stdio transport requires 'command'".into()))?;
                 let args = config.args.as_deref().unwrap_or(&[]);
                 let env = config.env.as_ref().unwrap_or(&empty_map);
-                Box::new(StdioTransport::spawn(command, args, env).await?)
+                Arc::new(StdioTransport::spawn(command, args, env).await?)
             }
             TransportType::Sse => {
                 let url = config
@@ -137,7 +183,7 @@ impl McpManager {
                     .as_deref()
                     .ok_or_else(|| McpError::InitFailed("SSE transport requires 'url'".into()))?;
                 let headers = config.headers.as_ref().unwrap_or(&empty_map);
-                Box::new(SseTransport::connect(url, headers).await?)
+                Arc::new(SseTransport::connect(url, headers).await?)
             }
             TransportType::StreamableHttp => {
                 let url = config
@@ -145,7 +191,7 @@ impl McpManager {
                     .as_deref()
                     .ok_or_else(|| McpError::InitFailed("streamable-http transport requires 'url'".into()))?;
                 let headers = config.headers.as_ref().unwrap_or(&empty_map);
-                Box::new(StreamableHttpTransport::connect(url, headers).await?)
+                Arc::new(StreamableHttpTransport::connect(url, headers).await?)
             }
         };
 
@@ -262,8 +308,9 @@ impl McpManager {
             .get(server_name)
             .ok_or_else(|| McpError::ServerNotFound(server_name.to_string()))?;
 
+        let request_id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let request = JsonRpcRequest::new(
-            self.next_id.fetch_add(1, Ordering::Relaxed),
+            request_id,
             "tools/call",
             Some(json!({
                 "name": tool_name,
@@ -271,7 +318,10 @@ impl McpManager {
             })),
         );
 
-        let response = server.transport.request(&request).await?;
+        let mut cancellation = McpRequestCancellation::new(Arc::clone(&server.transport), request_id);
+        let response = server.transport.request(&request).await;
+        cancellation.disarm();
+        let response = response?;
 
         let result_value = response
             .result
@@ -360,7 +410,7 @@ impl McpManager {
                 name.to_string(),
                 McpServer {
                     name: name.to_string(),
-                    transport,
+                    transport: Arc::from(transport),
                     tools: vec![],
                     supports_resources,
                 },
