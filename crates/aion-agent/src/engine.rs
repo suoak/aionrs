@@ -16,6 +16,7 @@ use crate::context_usage::{
     estimate_tool_definitions_tokens,
 };
 use crate::error::AgentError;
+use crate::injection::InjectionHandle;
 use crate::orchestration::{
     ExecutionControl, execute_tool_calls_with_approval_and_output_limit, execute_tool_calls_with_output_limit,
 };
@@ -97,6 +98,8 @@ pub struct AgentEngine {
     /// every message appended via `push_history`, including late
     /// `abort_current_turn` tool results.
     current_turn_id: Option<String>,
+    /// Host inputs waiting for the next model request in the active run.
+    injection_handle: InjectionHandle,
     /// Maximum output tokens requested from the provider per turn.
     max_tokens: Option<u32>,
     /// Optional cap on counted model turns within a single run.
@@ -212,6 +215,7 @@ impl AgentEngine {
             msg_id: String::new(),
             pending_turn_id: None,
             current_turn_id: None,
+            injection_handle: InjectionHandle::default(),
             max_turns_per_run: config.max_turns,
             max_tool_call_malformed_turns: config
                 .max_tool_call_malformed_turns
@@ -309,6 +313,7 @@ impl AgentEngine {
             msg_id: String::new(),
             pending_turn_id: None,
             current_turn_id: None,
+            injection_handle: InjectionHandle::default(),
             max_turns_per_run: config.max_turns,
             max_tool_call_malformed_turns: config
                 .max_tool_call_malformed_turns
@@ -491,6 +496,11 @@ impl AgentEngine {
         self.current_turn_id.as_deref()
     }
 
+    /// Return a cloneable handle that remains usable while `run` borrows the engine.
+    pub fn injection_handle(&self) -> InjectionHandle {
+        self.injection_handle.clone()
+    }
+
     /// Append a message to the conversation history, stamped with the
     /// current run's turn id (the session-side fork anchor).
     fn push_history(&mut self, role: Role, content: Vec<ContentBlock>) {
@@ -519,6 +529,7 @@ impl AgentEngine {
             self.max_tool_call_failure_turns,
         );
         loop {
+            self.apply_pending_injections();
             if let Some(limit) = guards.turn_budget_reached() {
                 self.save_session();
                 let message = format!(
@@ -547,6 +558,7 @@ impl AgentEngine {
                 TurnOutcome::Final(outcome) => {
                     let assistant_content = build_assistant_content(&outcome);
                     self.push_history(Role::Assistant, assistant_content);
+                    self.reject_pending_injections("too_late");
                     self.save_session();
                     return Ok(AgentResult {
                         text: outcome.assistant_text,
@@ -558,6 +570,7 @@ impl AgentEngine {
                 TurnOutcome::Truncated(outcome) => {
                     let assistant_content = build_assistant_content(&outcome);
                     self.push_history(Role::Assistant, assistant_content);
+                    self.reject_pending_injections("too_late");
                     self.save_session();
                     return self
                         .finalize_once(
@@ -645,6 +658,38 @@ impl AgentEngine {
                         .await;
                 }
                 TurnGuardAction::Stop(err) => return Err(err),
+            }
+        }
+    }
+
+    fn apply_pending_injections(&mut self) {
+        let injections = self.injection_handle.drain();
+        if injections.is_empty() {
+            return;
+        }
+        for injection in injections {
+            let blocks = vec![ContentBlock::Text {
+                text: injection.content,
+            }];
+            self.record_local_context_addition(estimate_content_tokens(&blocks));
+            self.push_history(Role::User, blocks);
+            if let Some(writer) = &self.protocol_writer {
+                let _ = writer.emit(&aion_protocol::events::ProtocolEvent::InputApplied {
+                    input_id: injection.input_id,
+                    turn_id: self.current_turn_id.clone(),
+                });
+            }
+        }
+        self.save_session();
+    }
+
+    fn reject_pending_injections(&self, error_code: &str) {
+        for injection in self.injection_handle.drain() {
+            if let Some(writer) = &self.protocol_writer {
+                let _ = writer.emit(&aion_protocol::events::ProtocolEvent::InputRejected {
+                    input_id: injection.input_id,
+                    error_code: error_code.to_owned(),
+                });
             }
         }
     }

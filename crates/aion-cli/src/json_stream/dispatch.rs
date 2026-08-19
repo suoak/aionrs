@@ -85,6 +85,12 @@ pub(super) fn handle(cmd: ProtocolCommand, engine: &mut AgentEngine, ctx: &Strea
                 "Message reached dispatch::handle; expected routing to message::handle"
             );
         }
+        ProtocolCommand::Inject { input_id, .. } => {
+            let _ = ctx.writer.emit(&ProtocolEvent::InputRejected {
+                input_id,
+                error_code: "too_late".to_owned(),
+            });
+        }
     }
 
     DispatchOutcome::Continue

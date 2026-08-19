@@ -14,6 +14,10 @@ pub enum ProtocolCommand {
         #[serde(default)]
         files: Vec<String>,
     },
+    Inject {
+        input_id: String,
+        content: String,
+    },
     Stop,
     ToolApprove {
         call_id: String,

@@ -4,6 +4,7 @@ use aion_types::message::ImageInputCapability;
 #[test]
 fn capabilities_serialize_with_all_fields() {
     let caps = Capabilities {
+        inject: true,
         tool_approval: true,
         image_input: ImageInputCapability::Supported,
         thinking: true,
@@ -33,6 +34,7 @@ fn capabilities_serialize_with_all_fields() {
 #[test]
 fn config_changed_event_serializes_correctly() {
     let caps = Capabilities {
+        inject: true,
         tool_approval: true,
         image_input: ImageInputCapability::Unsupported,
         thinking: false,
@@ -54,6 +56,7 @@ fn config_changed_event_serializes_correctly() {
 #[test]
 fn capabilities_with_effort_levels_roundtrip() {
     let caps = Capabilities {
+        inject: true,
         tool_approval: true,
         image_input: ImageInputCapability::Unknown,
         thinking: false,

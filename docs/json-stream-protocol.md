@@ -33,6 +33,7 @@ Emitted once after initialization completes. Client MUST wait for this before se
   "version": "0.2.0",
   "session_id": "a1b2c3",
   "capabilities": {
+    "inject": true,
     "tool_approval": true,
     "image_input": "supported",
     "thinking": true,
@@ -49,6 +50,7 @@ Emitted once after initialization completes. Client MUST wait for this before se
 |-------|------|-------------|
 | `version` | string | Protocol version (semver) |
 | `session_id` | string? | Session ID (omitted when sessions are disabled in config) |
+| `capabilities.inject` | bool | Whether the active turn accepts host-only input for its next model step |
 | `capabilities.tool_approval` | bool | Whether agent supports pause-and-wait tool approval |
 | `capabilities.image_input` | string | Resolved image-input capability: `supported`, `unsupported`, or `unknown` |
 | `capabilities.thinking` | bool | Whether current provider supports extended thinking |
@@ -67,6 +69,20 @@ A new response turn has started.
   "type": "stream_start",
   "msg_id": "abc-123"
 }
+```
+
+### 1.3 Input lifecycle events
+
+An `inject` command has an explicit lifecycle. `input_accepted` means the
+running agent loop owns the input; it does not mean the model has seen it.
+`input_applied` is emitted only after the input is added to the next model
+request. If the turn has already crossed its final injection boundary,
+`input_rejected` is emitted with `error_code: "too_late"`.
+
+```json
+{"type":"input_accepted","input_id":"input-1"}
+{"type":"input_applied","input_id":"input-1","turn_id":"turn-2"}
+{"type":"input_rejected","input_id":"input-2","error_code":"too_late"}
 ```
 
 ### 1.3 `text_delta`
@@ -327,6 +343,23 @@ Send a user message. Agent responds with a stream of events.
 |-------|------|----------|-------------|
 | `msg_id` | string | yes | Client-generated unique message ID |
 | `content` | string | yes | User's message text |
+
+### 2.2 `inject`
+
+Queue host input for the next model call of the currently active turn.
+Injection never mutates a request that has already been sent and is never
+silently converted to a follow-up turn.
+
+```json
+{
+  "type": "inject",
+  "input_id": "input-1",
+  "content": "Use the newly discovered constraint."
+}
+```
+
+The command is rejected with `invalid_input` when `content` is empty and with
+`too_late` when no message turn is active.
 | `files` | string[] | no | Attached file paths (images, documents) |
 
 ### 2.2 `stop`

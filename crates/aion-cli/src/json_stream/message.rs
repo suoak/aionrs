@@ -40,6 +40,7 @@ pub(super) async fn handle(
     let mut stopped = false;
     let mut pending_config: Option<PendingConfig> = None;
     let mut mode_changed = false;
+    let injection_handle = engine.injection_handle();
 
     {
         let engine_fut = engine.run(content, msg_id);
@@ -77,6 +78,17 @@ pub(super) async fn handle(
                         ProtocolCommand::Stop => {
                             stopped = true;
                             break;
+                        }
+                        ProtocolCommand::Inject { input_id, content } => {
+                            if content.trim().is_empty() {
+                                let _ = ctx.writer.emit(&ProtocolEvent::InputRejected {
+                                    input_id,
+                                    error_code: "invalid_input".to_owned(),
+                                });
+                            } else {
+                                injection_handle.enqueue(input_id.clone(), content);
+                                let _ = ctx.writer.emit(&ProtocolEvent::InputAccepted { input_id });
+                            }
                         }
                         ProtocolCommand::SetConfig {
                             model,
