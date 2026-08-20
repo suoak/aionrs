@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::confirm::{ConfirmResult, ToolConfirmer};
-use crate::tool_policy::ToolPolicy;
+use crate::tool_policy::{ToolGateDecision, ToolGateDenial, ToolPolicy};
 use aion_config::compact::CompactConfig;
 use aion_config::hooks::HookEngine;
 use aion_protocol::events::{OutputType, ProtocolEvent, ToolCategory, ToolInfo, ToolStatus};
@@ -578,11 +578,19 @@ fn policy_denial_result(
         return None;
     };
     let tool = registry.get(name)?;
-    let policy_denied = !tool_policy.allows(name);
-    let capability_denied = tool.requires_image_input() && !scope.image_input_supported;
-    if !policy_denied && !capability_denied {
+    let policy_gate = tool_policy.decision(name);
+    let capability_gate = if tool.requires_image_input() && !scope.image_input_supported {
+        ToolGateDecision::Deny(ToolGateDenial::Capability)
+    } else {
+        ToolGateDecision::Allow
+    };
+    let decision = policy_gate.and(capability_gate);
+    if !decision.is_denied() {
         return None;
     }
+
+    let policy_denied = matches!(policy_gate, ToolGateDecision::Deny(ToolGateDenial::Policy));
+    let capability_denied = matches!(capability_gate, ToolGateDecision::Deny(ToolGateDenial::Capability));
 
     tracing::warn!(
         target: "aion_agent",
