@@ -41,6 +41,7 @@ pub(super) async fn handle(
     let mut pending_config: Option<PendingConfig> = None;
     let mut mode_changed = false;
     let injection_handle = engine.injection_handle();
+    let turn_cancellation = engine.prepare_turn_cancellation();
 
     {
         let engine_fut = engine.run(content, msg_id);
@@ -76,6 +77,7 @@ pub(super) async fn handle(
                             ctx.approval_manager.resolve(&call_id, ToolApprovalResult::Denied { reason });
                         }
                         ProtocolCommand::Stop => {
+                            turn_cancellation.cancel();
                             stopped = true;
                             break;
                         }

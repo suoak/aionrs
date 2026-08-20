@@ -88,6 +88,11 @@ impl Tool for McpToolProxy {
                 let is_error = result.is_error;
                 let mut text = Vec::new();
                 let mut follow_up_blocks = Vec::new();
+                let content_blocks = result
+                    .content
+                    .iter()
+                    .filter_map(|content| serde_json::to_value(content).ok())
+                    .collect();
                 for content in result.content {
                     match content {
                         super::protocol::McpContent::Text { text: value } => text.push(value),
@@ -109,6 +114,10 @@ impl Tool for McpToolProxy {
                         is_error,
                     },
                     follow_up_blocks: if is_error { Vec::new() } else { follow_up_blocks },
+                    content_blocks: Some(content_blocks),
+                    structured_content: result.structured_content,
+                    error_code: is_error.then_some(aion_types::tool::ToolExecutionErrorCode::ExecutionFailed),
+                    truncation: None,
                 }
             }
             Err(error) => ToolExecutionOutput {
@@ -117,6 +126,10 @@ impl Tool for McpToolProxy {
                     is_error: true,
                 },
                 follow_up_blocks: Vec::new(),
+                content_blocks: None,
+                structured_content: None,
+                error_code: Some(aion_types::tool::ToolExecutionErrorCode::ExecutionFailed),
+                truncation: None,
             },
         }
     }

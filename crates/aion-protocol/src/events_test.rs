@@ -114,11 +114,57 @@ mod tests {
             output: "file content".to_string(),
             output_type: OutputType::Text,
             metadata: None,
+            content_blocks: None,
+            structured_content: None,
+            error_code: None,
+            truncation: None,
         };
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "tool_result");
         assert_eq!(json["status"], "success");
         assert!(json.get("metadata").is_none());
+    }
+
+    #[test]
+    fn tool_result_serializes_optional_structured_fields() {
+        let event = ProtocolEvent::ToolResult {
+            msg_id: "m1".to_string(),
+            call_id: "c1".to_string(),
+            execution_id: "exec-1".to_string(),
+            tool_name: "mcp_tool".to_string(),
+            status: ToolStatus::Error,
+            output: "projection".to_string(),
+            output_type: OutputType::Text,
+            metadata: None,
+            content_blocks: Some(vec![json!({"type": "image", "data": "AA==", "mimeType": "image/png"})]),
+            structured_content: Some(json!({"rows": [1, 2]})),
+            error_code: Some(aion_types::tool::ToolExecutionErrorCode::ExecutionFailed),
+            truncation: Some(aion_types::tool::ToolResultTruncation {
+                original_bytes: 20,
+                output_bytes: 10,
+                limit_bytes: 10,
+            }),
+        };
+
+        let value = serde_json::to_value(event).unwrap();
+        assert_eq!(value["content_blocks"][0]["type"], "image");
+        assert_eq!(value["structured_content"]["rows"], json!([1, 2]));
+        assert_eq!(value["error_code"], "execution_failed");
+        assert_eq!(value["truncation"]["original_bytes"], 20);
+    }
+
+    #[test]
+    fn tool_cancelled_serializes_stable_error_code() {
+        let value = serde_json::to_value(ProtocolEvent::ToolCancelled {
+            msg_id: "m1".to_owned(),
+            call_id: "c1".to_owned(),
+            execution_id: "exec-1".to_owned(),
+            reason: "canceled".to_owned(),
+            error_code: Some(aion_types::tool::ToolExecutionErrorCode::Canceled),
+        })
+        .unwrap();
+
+        assert_eq!(value["error_code"], "canceled");
     }
 
     #[test]

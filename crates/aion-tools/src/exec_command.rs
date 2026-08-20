@@ -8,9 +8,9 @@ use serde_json::{Value, json};
 use aion_config::shell::{resolve_shell, shell_command_builder};
 use aion_process::CommandRunner;
 use aion_protocol::events::ToolCategory;
-use aion_types::tool::{JsonSchema, ToolResult};
+use aion_types::tool::{JsonSchema, ToolExecutionErrorCode, ToolResult};
 
-use crate::Tool;
+use crate::{Tool, ToolCallContext, ToolExecutionOutput};
 
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const MAX_TIMEOUT_MS: u64 = 600_000;
@@ -32,6 +32,71 @@ impl ExecCommandTool {
         Self {
             cwd,
             runtime_env: runtime_env.into_iter().collect(),
+        }
+    }
+
+    async fn execute_input(
+        &self,
+        input: Value,
+        cancellation: Option<tokio_util::sync::CancellationToken>,
+    ) -> ToolResult {
+        let Some(command) = input["cmd"].as_str() else {
+            return ToolResult {
+                content: "Missing required parameter: cmd".to_string(),
+                is_error: true,
+            };
+        };
+
+        let shell = match resolve_shell(input["shell"].as_str()) {
+            Ok(shell) => shell,
+            Err(err) => {
+                return ToolResult {
+                    content: format!("Invalid shell: {}", err),
+                    is_error: true,
+                };
+            }
+        };
+
+        tracing::info!(
+            cwd = %self.cwd.display(),
+            shell_kind = shell.kind.name(),
+            shell_path = %shell.path.display(),
+            "ExecCommandTool executing"
+        );
+
+        let timeout_ms = input["timeout"]
+            .as_u64()
+            .unwrap_or(DEFAULT_TIMEOUT_MS)
+            .min(MAX_TIMEOUT_MS);
+        let timeout = Duration::from_millis(timeout_ms);
+        let mut command_builder = shell_command_builder(&shell, command, false);
+        command_builder.envs(&self.runtime_env).current_dir(&self.cwd);
+        let runner = CommandRunner::new(command_builder).timeout(timeout);
+        let result = match cancellation {
+            Some(token) => runner.run_with_cancellation(token).await,
+            None => runner.run().await,
+        };
+
+        match result {
+            Ok(result) if result.canceled => ToolResult {
+                content: "[tool_error:canceled] Tool execution canceled".to_owned(),
+                is_error: true,
+            },
+            Ok(result) if result.timed_out => ToolResult {
+                content: render_timeout_result(timeout_ms, &result.stdout, &result.stderr),
+                is_error: true,
+            },
+            Ok(result) => {
+                let exit_code = result.exit_code.unwrap_or(-1);
+                ToolResult {
+                    content: render_exit_result(exit_code, &result.stdout, &result.stderr),
+                    is_error: exit_code != 0,
+                }
+            }
+            Err(err) => ToolResult {
+                content: format!("Failed to execute command: {}", err),
+                is_error: true,
+            },
         }
     }
 }
@@ -98,59 +163,15 @@ impl Tool for ExecCommandTool {
     }
 
     async fn execute(&self, input: Value) -> ToolResult {
-        let Some(command) = input["cmd"].as_str() else {
-            return ToolResult {
-                content: "Missing required parameter: cmd".to_string(),
-                is_error: true,
-            };
-        };
+        self.execute_input(input, None).await
+    }
 
-        let shell = match resolve_shell(input["shell"].as_str()) {
-            Ok(shell) => shell,
-            Err(err) => {
-                return ToolResult {
-                    content: format!("Invalid shell: {}", err),
-                    is_error: true,
-                };
-            }
-        };
-
-        tracing::info!(
-            cwd = %self.cwd.display(),
-            shell_kind = shell.kind.name(),
-            shell_path = %shell.path.display(),
-            "ExecCommandTool executing"
-        );
-
-        let timeout_ms = input["timeout"]
-            .as_u64()
-            .unwrap_or(DEFAULT_TIMEOUT_MS)
-            .min(MAX_TIMEOUT_MS);
-
-        let timeout = Duration::from_millis(timeout_ms);
-
-        let cwd = self.cwd.clone();
-        let mut command_builder = shell_command_builder(&shell, command, false);
-        command_builder.envs(&self.runtime_env).current_dir(&cwd);
-
-        let result = CommandRunner::new(command_builder).timeout(timeout).run().await;
-
-        match result {
-            Ok(result) if result.timed_out => ToolResult {
-                content: render_timeout_result(timeout_ms, &result.stdout, &result.stderr),
-                is_error: true,
-            },
-            Ok(result) => {
-                let exit_code = result.exit_code.unwrap_or(-1);
-                ToolResult {
-                    content: render_exit_result(exit_code, &result.stdout, &result.stderr),
-                    is_error: exit_code != 0,
-                }
-            }
-            Err(err) => ToolResult {
-                content: format!("Failed to execute command: {}", err),
-                is_error: true,
-            },
+    async fn execute_with_context(&self, input: Value, context: &ToolCallContext) -> ToolExecutionOutput {
+        let result = self.execute_input(input, Some(context.cancellation.clone())).await;
+        let canceled = context.cancellation.is_cancelled();
+        ToolExecutionOutput {
+            error_code: canceled.then_some(ToolExecutionErrorCode::Canceled),
+            ..result.into()
         }
     }
 

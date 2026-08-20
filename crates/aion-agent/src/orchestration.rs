@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::confirm::{ConfirmResult, ToolConfirmer};
+use crate::tool_policy::ToolPolicy;
 use aion_config::compact::CompactConfig;
 use aion_config::hooks::HookEngine;
 use aion_protocol::events::{OutputType, ProtocolEvent, ToolCategory, ToolInfo, ToolStatus};
@@ -8,9 +9,9 @@ use aion_protocol::writer::ProtocolEmitter;
 use aion_protocol::{ToolApprovalManager, ToolApprovalResult};
 use aion_types::message::ContentBlock;
 use aion_types::skill_types::ContextModifier;
-use aion_types::tool::ToolResult;
+use aion_types::tool::{ToolExecutionErrorCode, ToolResult, ToolResultTruncation};
 
-use aion_tools::{registry::ToolRegistry, truncate_utf8};
+use aion_tools::{ToolCallContext, registry::ToolRegistry, truncate_utf8};
 use tokio_util::sync::CancellationToken;
 
 /// The combined output of a tool execution batch: protocol content blocks
@@ -57,6 +58,7 @@ pub(crate) struct ToolExecutionScope {
     pub turn_id: Option<String>,
     pub step: usize,
     pub image_input_supported: bool,
+    pub cancellation: CancellationToken,
 }
 
 #[derive(Debug, Clone)]
@@ -82,12 +84,128 @@ impl ToolExecutionContext {
             capability_snapshot: ToolCapabilitySnapshot {
                 image_input_supported: scope.image_input_supported,
             },
-            cancellation: CancellationToken::new(),
+            cancellation: scope.cancellation.clone(),
             policy_source: "runtime_tool_policy",
             approval_source,
             mode,
         }
     }
+}
+
+enum ApprovalProvider<'a> {
+    Terminal {
+        confirmer: &'a Arc<Mutex<ToolConfirmer>>,
+    },
+    Protocol {
+        manager: &'a Arc<ToolApprovalManager>,
+        writer: &'a Arc<dyn ProtocolEmitter>,
+        msg_id: &'a str,
+        auto_approve: bool,
+        allow_list: &'a [String],
+    },
+}
+
+enum ApprovalDecision {
+    Approved,
+    Denied(String),
+}
+
+impl ApprovalProvider<'_> {
+    fn source_for(&self, registry: &ToolRegistry, call: &ContentBlock) -> &'static str {
+        match self {
+            Self::Terminal { .. } => "interactive",
+            Self::Protocol {
+                manager,
+                auto_approve,
+                allow_list,
+                ..
+            } => {
+                let ContentBlock::ToolUse { name, .. } = call else {
+                    return "automatic";
+                };
+                let Some(tool) = registry.get(name) else {
+                    return "automatic";
+                };
+                let category = tool.category();
+                if !*auto_approve && !allow_list.contains(name) && !manager.is_auto_approved(&category.to_string()) {
+                    "host"
+                } else {
+                    "automatic"
+                }
+            }
+        }
+    }
+
+    async fn approve(
+        &self,
+        registry: &ToolRegistry,
+        call: &ContentBlock,
+        context: &ToolExecutionContext,
+    ) -> Result<ApprovalDecision, ExecutionControl> {
+        let ContentBlock::ToolUse { id, name, input, .. } = call else {
+            return Ok(ApprovalDecision::Approved);
+        };
+        match self {
+            Self::Terminal { confirmer } => {
+                let input_display = serde_json::to_string(input).unwrap_or_default();
+                match confirmer
+                    .lock()
+                    .unwrap()
+                    .check(name, &truncate_display(&input_display, 200))
+                {
+                    ConfirmResult::Approved => Ok(ApprovalDecision::Approved),
+                    ConfirmResult::Denied => Ok(ApprovalDecision::Denied("Tool execution denied by user".to_owned())),
+                    ConfirmResult::Quit => Err(ExecutionControl::Quit),
+                }
+            }
+            Self::Protocol {
+                manager,
+                writer,
+                msg_id,
+                ..
+            } => {
+                if context.approval_source != "host" {
+                    return Ok(ApprovalDecision::Approved);
+                }
+                let tool = registry.get(name);
+                let category = tool.map(|value| value.category()).unwrap_or(ToolCategory::Exec);
+                let description = tool.map(|value| value.describe(input)).unwrap_or_default();
+                let _ = writer.emit(&ProtocolEvent::ToolRequest {
+                    msg_id: (*msg_id).to_owned(),
+                    call_id: id.clone(),
+                    execution_id: context.execution_id.clone(),
+                    tool: ToolInfo {
+                        name: name.clone(),
+                        category,
+                        args: input.clone(),
+                        description,
+                    },
+                });
+                match manager.request_approval(id, &category).await {
+                    Ok(ToolApprovalResult::Approved) => Ok(ApprovalDecision::Approved),
+                    Ok(ToolApprovalResult::Denied { reason }) => {
+                        let _ = writer.emit(&ProtocolEvent::ToolCancelled {
+                            msg_id: (*msg_id).to_owned(),
+                            call_id: id.clone(),
+                            execution_id: context.execution_id.clone(),
+                            reason: reason.clone(),
+                            error_code: Some(ToolExecutionErrorCode::UserDenied),
+                        });
+                        Ok(ApprovalDecision::Denied(reason))
+                    }
+                    Err(_) => Err(ExecutionControl::Quit),
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct ToolExecutionDetails {
+    content_blocks: Option<Vec<serde_json::Value>>,
+    structured_content: Option<serde_json::Value>,
+    error_code: Option<ToolExecutionErrorCode>,
+    truncation: Option<ToolResultTruncation>,
 }
 
 fn tool_error(code: &str, message: impl AsRef<str>) -> String {
@@ -132,6 +250,7 @@ pub async fn execute_tool_calls(
         toon_enabled,
         CompactConfig::default().tool_output_max_bytes,
         ToolExecutionScope::default(),
+        &ToolPolicy::Unrestricted,
     )
     .await
 }
@@ -146,10 +265,12 @@ pub(crate) async fn execute_tool_calls_with_output_limit(
     toon_enabled: bool,
     tool_output_max_bytes: usize,
     scope: ToolExecutionScope,
+    tool_policy: &ToolPolicy,
 ) -> Result<ToolCallOutcome, ExecutionControl> {
     let mut results = Vec::new();
     let mut modifiers = Vec::new();
     let mut follow_up_blocks = Vec::new();
+    let approval = ApprovalProvider::Terminal { confirmer };
 
     for batch in partition(registry, tool_calls) {
         if batch.is_concurrent {
@@ -158,29 +279,35 @@ pub(crate) async fn execute_tool_calls_with_output_limit(
             // so no skill hooks merging is needed here.
             let mut approved = Vec::new();
             for call in &batch.calls {
-                match confirm_call(confirmer, call)? {
-                    Some(denied) => {
-                        results.push(denied);
+                let context = ToolExecutionContext::new(
+                    tool_call_id(call),
+                    None,
+                    ToolExecutionMode::Terminal,
+                    &scope,
+                    approval.source_for(registry, call),
+                );
+                if let Some(denied) = policy_denial_result(registry, call, &context, &scope, tool_policy) {
+                    results.push(denied);
+                    modifiers.push(None);
+                    continue;
+                }
+                match approval.approve(registry, call, &context).await? {
+                    ApprovalDecision::Denied(reason) => {
+                        results.push(approval_denial_result(call, &reason));
                         modifiers.push(None);
                     }
-                    None => approved.push(call),
+                    ApprovalDecision::Approved => approved.push((*call, context)),
                 }
             }
             // Reborrow as shared for concurrent execution.
             let hooks_shared: Option<&HookEngine> = hooks.as_deref();
             let futures: Vec<_> = approved
                 .iter()
-                .map(|call| {
+                .map(|(call, context)| {
                     execute_single(
                         registry,
                         call,
-                        ToolExecutionContext::new(
-                            tool_call_id(call),
-                            None,
-                            ToolExecutionMode::Terminal,
-                            &scope,
-                            "interactive",
-                        ),
+                        context.clone(),
                         hooks_shared,
                         compaction_level,
                         toon_enabled,
@@ -189,35 +316,41 @@ pub(crate) async fn execute_tool_calls_with_output_limit(
                 })
                 .collect();
             let batch_results = futures::future::join_all(futures).await;
-            for (block, modifier, blocks) in batch_results {
+            for (block, modifier, blocks, _) in batch_results {
                 results.push(block);
                 modifiers.push(modifier);
                 follow_up_blocks.extend(blocks);
             }
         } else {
             for call in &batch.calls {
-                match confirm_call(confirmer, call)? {
-                    Some(denied) => {
-                        results.push(denied);
+                let context = ToolExecutionContext::new(
+                    tool_call_id(call),
+                    None,
+                    ToolExecutionMode::Terminal,
+                    &scope,
+                    approval.source_for(registry, call),
+                );
+                if let Some(denied) = policy_denial_result(registry, call, &context, &scope, tool_policy) {
+                    results.push(denied);
+                    modifiers.push(None);
+                    continue;
+                }
+                match approval.approve(registry, call, &context).await? {
+                    ApprovalDecision::Denied(reason) => {
+                        results.push(approval_denial_result(call, &reason));
                         modifiers.push(None);
                     }
-                    None => {
+                    ApprovalDecision::Approved => {
                         // Reborrow as shared for execute_single, then reclaim mut for merge.
                         let block;
                         let modifier;
                         let blocks;
                         {
                             let hooks_shared: Option<&HookEngine> = hooks.as_deref();
-                            (block, modifier, blocks) = execute_single(
+                            (block, modifier, blocks, _) = execute_single(
                                 registry,
                                 call,
-                                ToolExecutionContext::new(
-                                    tool_call_id(call),
-                                    None,
-                                    ToolExecutionMode::Terminal,
-                                    &scope,
-                                    "interactive",
-                                ),
+                                context,
                                 hooks_shared,
                                 compaction_level,
                                 toon_enabled,
@@ -253,29 +386,14 @@ pub enum ExecutionControl {
     Quit,
 }
 
-/// Confirm a single tool call. Returns Ok(Some(result)) if denied, Ok(None) if approved, Err if quit.
-fn confirm_call(
-    confirmer: &Arc<Mutex<ToolConfirmer>>,
-    call: &ContentBlock,
-) -> Result<Option<ContentBlock>, ExecutionControl> {
-    let ContentBlock::ToolUse { id, name, input, .. } = call else {
-        return Ok(None);
+fn approval_denial_result(call: &ContentBlock, reason: &str) -> ContentBlock {
+    let ContentBlock::ToolUse { id, .. } = call else {
+        unreachable!("approval received a non-tool-use block")
     };
-
-    let input_display = serde_json::to_string(input).unwrap_or_default();
-    let result = confirmer
-        .lock()
-        .unwrap()
-        .check(name, &truncate_display(&input_display, 200));
-
-    match result {
-        ConfirmResult::Approved => Ok(None),
-        ConfirmResult::Denied => Ok(Some(ContentBlock::ToolResult {
-            tool_use_id: id.clone(),
-            content: tool_error("user_denied", "Tool execution denied by user"),
-            is_error: true,
-        })),
-        ConfirmResult::Quit => Err(ExecutionControl::Quit),
+    ContentBlock::ToolResult {
+        tool_use_id: id.clone(),
+        content: tool_error("user_denied", format!("Tool denied: {reason}")),
+        is_error: true,
     }
 }
 
@@ -287,7 +405,12 @@ async fn execute_single(
     compaction_level: aion_compact::CompactLevel,
     toon_enabled: bool,
     tool_output_max_bytes: usize,
-) -> (ContentBlock, Option<ContextModifier>, Vec<ContentBlock>) {
+) -> (
+    ContentBlock,
+    Option<ContextModifier>,
+    Vec<ContentBlock>,
+    ToolExecutionDetails,
+) {
     let ContentBlock::ToolUse { id, name, input, .. } = call else {
         unreachable!("execute_single called with non-ToolUse block")
     };
@@ -317,18 +440,36 @@ async fn execute_single(
         return (
             ContentBlock::ToolResult {
                 tool_use_id: id.clone(),
-                content: tool_error("hook_blocked", format!("Blocked by hook: {e}")),
+                content: tool_error("hook_failed", format!("Blocked by hook: {e}")),
                 is_error: true,
             },
             None,
             Vec::new(),
+            ToolExecutionDetails {
+                error_code: Some(ToolExecutionErrorCode::HookFailed),
+                ..ToolExecutionDetails::default()
+            },
         );
     }
 
-    let (result, modifier, follow_up_blocks) = match registry.get(name) {
+    let (result, modifier, follow_up_blocks, details) = match registry.get(name) {
         Some(tool) => {
             let max_size = tool.max_result_size();
-            let execution = tool.execute_with_follow_up(input.clone()).await;
+            let execution = tool
+                .execute_with_context(
+                    input.clone(),
+                    &ToolCallContext {
+                        execution_id: context.execution_id.clone(),
+                        cancellation: context.cancellation.clone(),
+                    },
+                )
+                .await;
+            let mut details = ToolExecutionDetails {
+                content_blocks: execution.content_blocks,
+                structured_content: execution.structured_content,
+                error_code: execution.error_code,
+                truncation: execution.truncation,
+            };
             let r = execution.result;
             let modifier = if r.is_error {
                 None
@@ -355,6 +496,11 @@ async fn execute_single(
             let output_limit = max_size.min(tool_output_max_bytes);
             let content = truncate_result(&content, output_limit);
             if content.len() < original_bytes {
+                details.truncation = Some(ToolResultTruncation {
+                    original_bytes,
+                    output_bytes: content.len(),
+                    limit_bytes: output_limit,
+                });
                 tracing::debug!(
                     target: "aion_agent",
                     tool = %name,
@@ -364,6 +510,9 @@ async fn execute_single(
                     "tool result truncated for model context"
                 );
             }
+            if r.is_error && details.error_code.is_none() {
+                details.error_code = Some(ToolExecutionErrorCode::ExecutionFailed);
+            }
             (
                 ToolResult {
                     content,
@@ -371,6 +520,7 @@ async fn execute_single(
                 },
                 modifier,
                 follow_up_blocks,
+                details,
             )
         }
         None => (
@@ -380,6 +530,10 @@ async fn execute_single(
             },
             None,
             Vec::new(),
+            ToolExecutionDetails {
+                error_code: Some(ToolExecutionErrorCode::UnknownTool),
+                ..ToolExecutionDetails::default()
+            },
         ),
     };
 
@@ -409,7 +563,45 @@ async fn execute_single(
         },
         modifier,
         follow_up_blocks,
+        details,
     )
+}
+
+fn policy_denial_result(
+    registry: &ToolRegistry,
+    call: &ContentBlock,
+    context: &ToolExecutionContext,
+    scope: &ToolExecutionScope,
+    tool_policy: &ToolPolicy,
+) -> Option<ContentBlock> {
+    let ContentBlock::ToolUse { id, name, .. } = call else {
+        return None;
+    };
+    let tool = registry.get(name)?;
+    let policy_denied = !tool_policy.allows(name);
+    let capability_denied = tool.requires_image_input() && !scope.image_input_supported;
+    if !policy_denied && !capability_denied {
+        return None;
+    }
+
+    tracing::warn!(
+        target: "aion_agent",
+        event = "agent.tool_policy.denied",
+        tool_call_id = %id,
+        execution_id = %context.execution_id,
+        tool = %name,
+        policy_denied,
+        capability_denied,
+        "rejected tool call before approval"
+    );
+    Some(ContentBlock::ToolResult {
+        tool_use_id: id.clone(),
+        content: tool_error(
+            "policy_denied",
+            format!("Tool '{name}' is not available in this runtime. Use an available tool or answer in text."),
+        ),
+        is_error: true,
+    })
 }
 
 /// Execute tool calls with JSON stream protocol approval flow
@@ -439,6 +631,7 @@ pub async fn execute_tool_calls_with_approval(
         toon_enabled,
         CompactConfig::default().tool_output_max_bytes,
         ToolExecutionScope::default(),
+        &ToolPolicy::Unrestricted,
     )
     .await
 }
@@ -457,69 +650,58 @@ pub(crate) async fn execute_tool_calls_with_approval_and_output_limit(
     toon_enabled: bool,
     tool_output_max_bytes: usize,
     scope: ToolExecutionScope,
+    tool_policy: &ToolPolicy,
 ) -> Result<ToolCallOutcome, ExecutionControl> {
     let mut results = Vec::new();
     let mut modifiers = Vec::new();
     let mut follow_up_blocks = Vec::new();
+    let approval = ApprovalProvider::Protocol {
+        manager: approval_manager,
+        writer,
+        msg_id,
+        auto_approve,
+        allow_list,
+    };
 
     for call in tool_calls {
-        let ContentBlock::ToolUse { id, name, input, .. } = call else {
+        let ContentBlock::ToolUse { id, name, .. } = call else {
             continue;
         };
 
-        let tool = registry.get(name);
-        let category = tool.map(|t| t.category()).unwrap_or(ToolCategory::Exec);
-        let description = tool.map(|t| t.describe(input)).unwrap_or_default();
-
-        // Check if approval is needed
-        let needs_approval = !auto_approve
-            && !allow_list.contains(&name.to_string())
-            && !approval_manager.is_auto_approved(&category.to_string());
         let context = ToolExecutionContext::new(
             id,
             Some(msg_id),
             ToolExecutionMode::Protocol,
             &scope,
-            if needs_approval { "host" } else { "automatic" },
+            approval.source_for(registry, call),
         );
 
-        if needs_approval {
-            // Emit tool_request and wait for approval
-            let _ = writer.emit(&ProtocolEvent::ToolRequest {
-                msg_id: msg_id.to_string(),
-                call_id: id.clone(),
-                execution_id: context.execution_id.clone(),
-                tool: ToolInfo {
-                    name: name.clone(),
-                    category,
-                    args: input.clone(),
-                    description,
-                },
-            });
-
-            let rx = approval_manager.request_approval(id, &category);
-            match rx.await {
-                Ok(ToolApprovalResult::Approved) => { /* continue to execute */ }
-                Ok(ToolApprovalResult::Denied { reason }) => {
-                    let _ = writer.emit(&ProtocolEvent::ToolCancelled {
-                        msg_id: msg_id.to_string(),
-                        call_id: id.clone(),
-                        execution_id: context.execution_id.clone(),
-                        reason: reason.clone(),
-                    });
-                    results.push(ContentBlock::ToolResult {
-                        tool_use_id: id.clone(),
-                        content: tool_error("user_denied", format!("Tool denied: {reason}")),
-                        is_error: true,
-                    });
-                    modifiers.push(None);
-                    continue;
-                }
-                Err(_) => {
-                    // Channel dropped — client disconnected
-                    return Err(ExecutionControl::Quit);
-                }
+        if let Some(denied) = policy_denial_result(registry, call, &context, &scope, tool_policy) {
+            if let ContentBlock::ToolResult { content, .. } = &denied {
+                let _ = writer.emit(&ProtocolEvent::ToolResult {
+                    msg_id: msg_id.to_string(),
+                    call_id: id.clone(),
+                    execution_id: context.execution_id.clone(),
+                    tool_name: name.clone(),
+                    status: ToolStatus::Error,
+                    output: content.clone(),
+                    output_type: OutputType::Text,
+                    metadata: None,
+                    content_blocks: None,
+                    structured_content: None,
+                    error_code: Some(ToolExecutionErrorCode::PolicyDenied),
+                    truncation: None,
+                });
             }
+            results.push(denied);
+            modifiers.push(None);
+            continue;
+        }
+
+        if let ApprovalDecision::Denied(reason) = approval.approve(registry, call, &context).await? {
+            results.push(approval_denial_result(call, &reason));
+            modifiers.push(None);
+            continue;
         }
 
         // Emit tool_running
@@ -534,9 +716,10 @@ pub(crate) async fn execute_tool_calls_with_approval_and_output_limit(
         let result;
         let modifier;
         let blocks;
+        let details;
         {
             let hooks_shared: Option<&HookEngine> = hooks.as_deref();
-            (result, modifier, blocks) = execute_single(
+            (result, modifier, blocks, details) = execute_single(
                 registry,
                 call,
                 context.clone(),
@@ -550,21 +733,44 @@ pub(crate) async fn execute_tool_calls_with_approval_and_output_limit(
 
         // Emit tool_result event
         if let ContentBlock::ToolResult { content, is_error, .. } = &result {
-            let status = if *is_error {
-                ToolStatus::Error
+            if details.error_code == Some(ToolExecutionErrorCode::Canceled) {
+                let _ = writer.emit(&ProtocolEvent::ToolCancelled {
+                    msg_id: msg_id.to_string(),
+                    call_id: id.clone(),
+                    execution_id: context.execution_id.clone(),
+                    reason: "Tool execution canceled".to_owned(),
+                    error_code: Some(ToolExecutionErrorCode::Canceled),
+                });
             } else {
-                ToolStatus::Success
-            };
-            let _ = writer.emit(&ProtocolEvent::ToolResult {
-                msg_id: msg_id.to_string(),
-                call_id: id.clone(),
-                execution_id: context.execution_id.clone(),
-                tool_name: name.clone(),
-                status,
-                output: content.clone(),
-                output_type: OutputType::Text,
-                metadata: None,
-            });
+                let status = if *is_error {
+                    ToolStatus::Error
+                } else {
+                    ToolStatus::Success
+                };
+                let output_type = if details.content_blocks.as_ref().is_some_and(|blocks| {
+                    blocks
+                        .iter()
+                        .any(|block| block.get("type").and_then(serde_json::Value::as_str) == Some("image"))
+                }) {
+                    OutputType::Image
+                } else {
+                    OutputType::Text
+                };
+                let _ = writer.emit(&ProtocolEvent::ToolResult {
+                    msg_id: msg_id.to_string(),
+                    call_id: id.clone(),
+                    execution_id: context.execution_id.clone(),
+                    tool_name: name.clone(),
+                    status,
+                    output: content.clone(),
+                    output_type,
+                    metadata: None,
+                    content_blocks: details.content_blocks,
+                    structured_content: details.structured_content,
+                    error_code: details.error_code,
+                    truncation: details.truncation,
+                });
+            }
         }
 
         // Merge skill hooks after a successful execution.

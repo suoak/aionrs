@@ -6,6 +6,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::containment::ChildContainment;
 
@@ -38,7 +39,15 @@ impl CommandRunner {
         self
     }
 
-    pub async fn run(mut self) -> Result<CommandResult> {
+    pub async fn run(self) -> Result<CommandResult> {
+        self.run_with_cancellation(CancellationToken::new()).await
+    }
+
+    /// Run until completion, timeout, or host cancellation.
+    ///
+    /// Timeout and cancellation both terminate the configured process
+    /// containment so descendants cannot outlive the tool future.
+    pub async fn run_with_cancellation(mut self, cancellation: CancellationToken) -> Result<CommandResult> {
         self.command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -60,9 +69,20 @@ impl CommandRunner {
             .take()
             .map(|reader| read_stream(reader, Arc::clone(&stderr)));
 
-        match tokio::time::timeout(self.timeout, child.wait()).await {
-            Ok(status) => {
-                let status = status?;
+        #[derive(Clone, Copy)]
+        enum Completion {
+            Exited(std::process::ExitStatus),
+            TimedOut,
+            Canceled,
+        }
+        let completion = tokio::select! {
+            status = child.wait() => Completion::Exited(status?),
+            _ = tokio::time::sleep(self.timeout) => Completion::TimedOut,
+            _ = cancellation.cancelled() => Completion::Canceled,
+        };
+
+        match completion {
+            Completion::Exited(status) => {
                 let (stdout_result, stderr_result) = tokio::join!(
                     drain_reader_with_result(stdout_reader, self.post_process_drain),
                     drain_reader_with_result(stderr_reader, self.post_process_drain)
@@ -73,11 +93,13 @@ impl CommandRunner {
                 Ok(CommandResult {
                     exit_code: status.code(),
                     timed_out: false,
+                    canceled: false,
                     stdout: take_output(stdout),
                     stderr: take_output(stderr),
                 })
             }
-            Err(_) => {
+            Completion::TimedOut | Completion::Canceled => {
+                let canceled = matches!(completion, Completion::Canceled);
                 containment.terminate(&mut child, child_id)?;
                 if let Ok(status) = tokio::time::timeout(self.post_process_drain, child.wait()).await {
                     status?;
@@ -89,7 +111,8 @@ impl CommandRunner {
 
                 Ok(CommandResult {
                     exit_code: None,
-                    timed_out: true,
+                    timed_out: !canceled,
+                    canceled,
                     stdout: take_output(stdout),
                     stderr: take_output(stderr),
                 })
@@ -102,6 +125,7 @@ impl CommandRunner {
 pub struct CommandResult {
     pub exit_code: Option<i32>,
     pub timed_out: bool,
+    pub canceled: bool,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
 }

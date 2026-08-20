@@ -147,6 +147,10 @@ impl Tool for ViewImageTool {
             Ok(image_url) => ToolExecutionOutput {
                 result: Self::success_result(file_path),
                 follow_up_blocks: vec![ContentBlock::Image { image_url }],
+                content_blocks: None,
+                structured_content: None,
+                error_code: None,
+                truncation: None,
             },
             Err(error) => Self::error_result(error).into(),
         }
