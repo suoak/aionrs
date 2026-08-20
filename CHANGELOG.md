@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.19](https://github.com/suoak/aionrs/compare/v0.2.18...v0.2.19) (2026-08-20)
+
+
+### Features
+
+* **agent:** unify cancellable tool execution ([#17](https://github.com/suoak/aionrs/issues/17)) ([ff1a07d](https://github.com/suoak/aionrs/commit/ff1a07df7e526d06235986f51876c1e00505ed11))
+
 ## [0.2.18](https://github.com/suoak/aionrs/compare/v0.2.17...v0.2.18) (2026-08-19)
 
 
