@@ -65,10 +65,12 @@ pub struct McpToolResult {
     pub content: Vec<McpContent>,
     #[serde(rename = "isError", default)]
     pub is_error: bool,
+    #[serde(rename = "structuredContent", default)]
+    pub structured_content: Option<Value>,
 }
 
 /// Content types returned by MCP tool calls
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type")]
 pub enum McpContent {
     #[serde(rename = "text")]

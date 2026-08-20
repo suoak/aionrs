@@ -55,6 +55,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runner_cancellation_terminates_the_contained_process_tree() {
+        #[cfg(windows)]
+        let script = "$p = Start-Process -FilePath powershell -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 10' -PassThru -WindowStyle Hidden; Write-Output $p.Id; Wait-Process -Id $p.Id";
+        #[cfg(not(windows))]
+        let script = "sleep 10 & echo $!; wait";
+
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let trigger = cancellation.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(1000)).await;
+            trigger.cancel();
+        });
+        let result = CommandRunner::new(shell_command(script))
+            .post_process_drain(Duration::from_millis(250))
+            .run_with_cancellation(cancellation)
+            .await
+            .expect("runner should return cancellation result");
+
+        assert!(result.canceled);
+        assert!(!result.timed_out);
+        let descendant_pid = String::from_utf8_lossy(&result.stdout)
+            .lines()
+            .find_map(|line| line.trim().parse::<u32>().ok())
+            .expect("script should print descendant pid");
+        assert_process_exits(descendant_pid).await;
+    }
+
+    #[tokio::test]
     async fn runner_returns_exit_code_and_output_for_completed_command() {
         #[cfg(windows)]
         let script = "Write-Output runner_completed_stdout; Write-Error runner_completed_stderr; exit 7";

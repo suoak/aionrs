@@ -31,7 +31,7 @@ use crate::tool_call::{
     ToolCallMalformedFingerprint, merge_tool_results, tool_call_failure_fingerprint, tool_call_malformed_fingerprint,
     tool_call_malformed_reason,
 };
-use crate::tool_policy::{ToolGateDecision, ToolGateDenial, ToolPolicy};
+use crate::tool_policy::ToolPolicy;
 use crate::turn::{FinalizationReason, ToolLoopWarning, TurnGuardAction, TurnGuards, TurnKind, TurnOutcome};
 use aion_compact::CompactLevel;
 use aion_config::compact::CompactConfig;
@@ -51,6 +51,7 @@ use anyhow::{Error as AnyhowError, Result as AnyhowResult};
 use chrono::Utc;
 use serde_json::to_string;
 use tokio::sync::mpsc::Receiver;
+use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, debug, error, info, info_span, warn};
 use uuid::Uuid;
 
@@ -99,6 +100,8 @@ pub struct AgentEngine {
     /// every message appended via `push_history`, including late
     /// `abort_current_turn` tool results.
     current_turn_id: Option<String>,
+    /// Shared cancellation source for the active turn and every derived tool call.
+    turn_cancellation: CancellationToken,
     /// Host inputs waiting for the next model request in the active run.
     injection_handle: InjectionHandle,
     /// Maximum output tokens requested from the provider per turn.
@@ -216,6 +219,7 @@ impl AgentEngine {
             msg_id: String::new(),
             pending_turn_id: None,
             current_turn_id: None,
+            turn_cancellation: CancellationToken::new(),
             injection_handle: InjectionHandle::default(),
             max_turns_per_run: config.max_turns,
             max_tool_call_malformed_turns: config
@@ -314,6 +318,7 @@ impl AgentEngine {
             msg_id: String::new(),
             pending_turn_id: None,
             current_turn_id: None,
+            turn_cancellation: CancellationToken::new(),
             injection_handle: InjectionHandle::default(),
             max_turns_per_run: config.max_turns,
             max_tool_call_malformed_turns: config
@@ -465,6 +470,9 @@ impl AgentEngine {
         content_blocks: Vec<ContentBlock>,
         msg_id: &str,
     ) -> Result<AgentResult, AgentError> {
+        if self.turn_cancellation.is_cancelled() {
+            self.turn_cancellation = CancellationToken::new();
+        }
         let command_input = match content_blocks.as_slice() {
             [ContentBlock::Text { text }] => Some(text.clone()),
             _ => None,
@@ -500,6 +508,14 @@ impl AgentEngine {
     /// Return a cloneable handle that remains usable while `run` borrows the engine.
     pub fn injection_handle(&self) -> InjectionHandle {
         self.injection_handle.clone()
+    }
+
+    /// Reset and return the cancellation source for the next turn.
+    /// Hosts call this immediately before `run`, retaining the clone while the
+    /// mutable engine borrow is held by the run future.
+    pub fn prepare_turn_cancellation(&mut self) -> CancellationToken {
+        self.turn_cancellation = CancellationToken::new();
+        self.turn_cancellation.clone()
     }
 
     /// Append a message to the conversation history, stamped with the
@@ -771,6 +787,7 @@ impl AgentEngine {
             turn_id: self.current_turn_id.clone(),
             step,
             image_input_supported: self.compat.image_input().supports_images(),
+            cancellation: self.turn_cancellation.clone(),
         };
         let tool_call_malformed_reasons: Vec<_> = tool_calls
             .iter()
@@ -782,38 +799,11 @@ impl AgentEngine {
             })
             .collect();
         let tool_call_malformed_fingerprint = tool_call_malformed_fingerprint(tool_calls, &tool_call_malformed_reasons);
-        let policy_denied_tool_names: Vec<_> = tool_calls
-            .iter()
-            .zip(&tool_call_malformed_reasons)
-            .map(|(call, malformed_reason)| {
-                if malformed_reason.is_some() {
-                    return None;
-                }
-                let ContentBlock::ToolUse { name, .. } = call else {
-                    return None;
-                };
-                let capability_denied = self
-                    .tools
-                    .get(name)
-                    .is_some_and(|tool| tool.requires_image_input() && !self.compat.image_input().supports_images());
-                let capability_gate = if capability_denied {
-                    ToolGateDecision::Deny(ToolGateDenial::Capability)
-                } else {
-                    ToolGateDecision::Allow
-                };
-                self.tool_policy
-                    .decision(name)
-                    .and(capability_gate)
-                    .is_denied()
-                    .then(|| name.clone())
-            })
-            .collect();
         let executable_tool_calls: Vec<_> = tool_calls
             .iter()
             .zip(&tool_call_malformed_reasons)
-            .zip(&policy_denied_tool_names)
-            .filter(|((_, malformed_reason), denied_name)| malformed_reason.is_none() && denied_name.is_none())
-            .map(|((call, _), _)| call.clone())
+            .filter(|(_, malformed_reason)| malformed_reason.is_none())
+            .map(|(call, _)| call.clone())
             .collect();
 
         let (executable_results, executable_modifiers, follow_up_blocks) = if executable_tool_calls.is_empty() {
@@ -838,6 +828,7 @@ impl AgentEngine {
                 self.toon_enabled,
                 self.compact_config.tool_output_max_bytes,
                 execution_scope.clone(),
+                &self.tool_policy,
             )
             .await
             {
@@ -858,6 +849,7 @@ impl AgentEngine {
                 self.toon_enabled,
                 self.compact_config.tool_output_max_bytes,
                 execution_scope,
+                &self.tool_policy,
             )
             .await
             {
@@ -869,10 +861,11 @@ impl AgentEngine {
             }
         };
 
+        let no_policy_denials = vec![None; tool_calls.len()];
         let (tool_results, tool_modifiers) = merge_tool_results(
             tool_calls,
             &tool_call_malformed_reasons,
-            &policy_denied_tool_names,
+            &no_policy_denials,
             executable_results,
             executable_modifiers,
         );
@@ -1617,6 +1610,7 @@ impl AgentEngine {
     /// already be in memory without its matching results. Add synthetic error
     /// results so the next request can safely reuse this history.
     pub fn abort_current_turn(&mut self, reason: &str) {
+        self.turn_cancellation.cancel();
         let Some(last_message) = self.messages.last() else {
             return;
         };

@@ -356,6 +356,7 @@ impl TuiRuntime {
         self.commit_pending_history(terminal)?;
         let message_id = format!("tui-{}", MESSAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed));
         let mut cancelled = false;
+        let turn_cancellation = engine.prepare_turn_cancellation();
         let result = {
             let engine_future = engine.run(&input, &message_id);
             tokio::pin!(engine_future);
@@ -392,6 +393,7 @@ impl TuiRuntime {
         };
 
         if cancelled {
+            turn_cancellation.cancel();
             self.deny_pending_approval("Turn cancelled");
             engine.abort_current_turn("Turn cancelled by user");
             self.state.cancel_turn();

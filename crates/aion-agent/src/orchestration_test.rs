@@ -11,6 +11,7 @@ mod tests {
             turn_id: Some("turn-1".into()),
             step: 3,
             image_input_supported: true,
+            cancellation: CancellationToken::new(),
         };
         let context =
             ToolExecutionContext::new("call-1", Some("message-1"), ToolExecutionMode::Protocol, &scope, "host");
@@ -263,7 +264,7 @@ mod tests {
             input: json!({}),
             extra: None,
         };
-        let (result, _, follow_up_blocks) = execute_single(
+        let (result, _, follow_up_blocks, _) = execute_single(
             &registry,
             &call,
             ToolExecutionContext::new(
@@ -299,7 +300,7 @@ mod tests {
             input: json!({"tasks": "not_an_array"}),
             extra: None,
         };
-        let (result, _, follow_up_blocks) = execute_single(
+        let (result, _, follow_up_blocks, _) = execute_single(
             &registry,
             &call,
             ToolExecutionContext::new(
@@ -334,7 +335,7 @@ mod tests {
             input: json!({"tasks": [{"name": "t1", "prompt": "do x"}]}),
             extra: None,
         };
-        let (result, _, follow_up_blocks) = execute_single(
+        let (result, _, follow_up_blocks, _) = execute_single(
             &registry,
             &call,
             ToolExecutionContext::new(
@@ -368,7 +369,7 @@ mod tests {
             input: json!({}),
             extra: None,
         };
-        let (result, _, follow_up_blocks) = execute_single(
+        let (result, _, follow_up_blocks, _) = execute_single(
             &registry,
             &call,
             ToolExecutionContext::new(

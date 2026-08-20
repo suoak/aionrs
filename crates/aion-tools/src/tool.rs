@@ -1,11 +1,19 @@
 use async_trait::async_trait;
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use aion_config::hooks::HooksConfig;
 use aion_protocol::events::ToolCategory;
 use aion_types::message::ContentBlock;
 use aion_types::skill_types::ContextModifier;
-use aion_types::tool::{JsonSchema, ToolResult};
+use aion_types::tool::{JsonSchema, ToolExecutionErrorCode, ToolResult, ToolResultTruncation};
+
+/// Host-provided identity and cancellation state for one tool call.
+#[derive(Debug, Clone)]
+pub struct ToolCallContext {
+    pub execution_id: String,
+    pub cancellation: CancellationToken,
+}
 
 /// Complete output from one tool execution.
 ///
@@ -16,6 +24,10 @@ use aion_types::tool::{JsonSchema, ToolResult};
 pub struct ToolExecutionOutput {
     pub result: ToolResult,
     pub follow_up_blocks: Vec<ContentBlock>,
+    pub content_blocks: Option<Vec<Value>>,
+    pub structured_content: Option<Value>,
+    pub error_code: Option<ToolExecutionErrorCode>,
+    pub truncation: Option<ToolResultTruncation>,
 }
 
 impl From<ToolResult> for ToolExecutionOutput {
@@ -23,6 +35,26 @@ impl From<ToolResult> for ToolExecutionOutput {
         Self {
             result,
             follow_up_blocks: Vec::new(),
+            content_blocks: None,
+            structured_content: None,
+            error_code: None,
+            truncation: None,
+        }
+    }
+}
+
+impl ToolExecutionOutput {
+    pub fn canceled() -> Self {
+        Self {
+            result: ToolResult {
+                content: "[tool_error:canceled] Tool execution canceled".to_owned(),
+                is_error: true,
+            },
+            follow_up_blocks: Vec::new(),
+            content_blocks: None,
+            structured_content: None,
+            error_code: Some(ToolExecutionErrorCode::Canceled),
+            truncation: None,
         }
     }
 }
@@ -64,6 +96,18 @@ pub trait Tool: Send + Sync {
     /// the textual tool-result channel.
     async fn execute_with_follow_up(&self, input: Value) -> ToolExecutionOutput {
         self.execute(input).await.into()
+    }
+
+    /// Execute with host-provided correlation and cancellation state.
+    ///
+    /// Existing tools remain source-compatible through this default. Dropping
+    /// the execution future activates process and MCP drop guards.
+    async fn execute_with_context(&self, input: Value, context: &ToolCallContext) -> ToolExecutionOutput {
+        tokio::select! {
+            biased;
+            _ = context.cancellation.cancelled() => ToolExecutionOutput::canceled(),
+            output = self.execute_with_follow_up(input) => output,
+        }
     }
 
     /// Whether advertising and executing this tool requires image-input

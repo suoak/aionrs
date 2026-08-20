@@ -97,6 +97,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn tool_result_preserves_structured_content_and_resource_shape() {
+        let result: McpToolResult = serde_json::from_value(json!({
+            "content": [{
+                "type": "resource",
+                "resource": {"uri": "file:///report.json", "mimeType": "application/json"}
+            }],
+            "structuredContent": {"rows": [{"id": 1}]},
+            "isError": false
+        }))
+        .unwrap();
+
+        assert_eq!(result.structured_content, Some(json!({"rows": [{"id": 1}]})));
+        assert!(matches!(result.content.as_slice(), [McpContent::Resource { .. }]));
+        assert_eq!(serde_json::to_value(&result.content[0]).unwrap()["type"], "resource");
+    }
+
     // -----------------------------------------------------------------------
     // TC-1.x: McpResource deserialization [黑盒]
     // -----------------------------------------------------------------------

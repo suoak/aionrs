@@ -1,4 +1,5 @@
 use aion_types::message::ImageInputCapability;
+use aion_types::tool::{ToolExecutionErrorCode, ToolResultTruncation};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -58,12 +59,22 @@ pub enum ProtocolEvent {
         output_type: OutputType,
         #[serde(skip_serializing_if = "Option::is_none")]
         metadata: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content_blocks: Option<Vec<Value>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        structured_content: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error_code: Option<ToolExecutionErrorCode>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        truncation: Option<ToolResultTruncation>,
     },
     ToolCancelled {
         msg_id: String,
         call_id: String,
         execution_id: String,
         reason: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error_code: Option<ToolExecutionErrorCode>,
     },
     StreamEnd {
         msg_id: String,

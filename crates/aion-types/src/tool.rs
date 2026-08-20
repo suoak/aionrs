@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Schema for a tool parameter, in JSON Schema format
@@ -45,6 +46,26 @@ pub struct ToolDef {
 pub struct ToolResult {
     pub content: String,
     pub is_error: bool,
+}
+
+/// Stable machine-readable reason for a tool execution failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolExecutionErrorCode {
+    UnknownTool,
+    PolicyDenied,
+    UserDenied,
+    HookFailed,
+    ExecutionFailed,
+    Canceled,
+}
+
+/// Text-projection truncation metadata. Structured content is never truncated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolResultTruncation {
+    pub original_bytes: usize,
+    pub output_bytes: usize,
+    pub limit_bytes: usize,
 }
 
 #[cfg(test)]
