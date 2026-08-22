@@ -71,10 +71,9 @@ pub struct ModelMaxTokensRule {
     pub max_tokens: u32,
 }
 
-/// Model substring rule for the *input* context window, mirroring
-/// [`ModelMaxTokensRule`] (which covers output budget only). The first
-/// matching pattern wins; patterns are normalized (lowercase, `.` → `-`)
-/// before matching, exactly like `model_max_tokens`.
+/// Model rule for the *input* context window. Patterns are normalized
+/// (lowercase, `.` → `-`) and support `*` wildcards. Without a wildcard,
+/// matching is exact. The first matching rule wins.
 #[derive(Debug, Clone, Deserialize, Serialize, Eq, PartialEq)]
 pub struct ModelContextWindowRule {
     pub pattern: String,
@@ -408,7 +407,7 @@ impl ProviderCompat {
         self.transport.model_context_window.as_deref().and_then(|rules| {
             rules.iter().find_map(|rule| {
                 let pattern = normalize_model_pattern(&rule.pattern);
-                normalized.contains(&pattern).then_some(rule.context_window)
+                wildcard_matches(&normalized, &pattern).then_some(rule.context_window)
             })
         })
     }
@@ -490,6 +489,31 @@ fn normalize_model_pattern(value: &str) -> String {
     value.to_ascii_lowercase().replace('.', "-")
 }
 
+fn wildcard_matches(value: &str, pattern: &str) -> bool {
+    if !pattern.contains('*') {
+        return value == pattern;
+    }
+
+    let mut remainder = value;
+    let mut first_segment = true;
+    for segment in pattern.split('*').filter(|segment| !segment.is_empty()) {
+        if first_segment && !pattern.starts_with('*') {
+            let Some(rest) = remainder.strip_prefix(segment) else {
+                return false;
+            };
+            remainder = rest;
+        } else {
+            let Some(index) = remainder.find(segment) else {
+                return false;
+            };
+            remainder = &remainder[index + segment.len()..];
+        }
+        first_segment = false;
+    }
+
+    pattern.ends_with('*') || remainder.is_empty()
+}
+
 fn anthropic_model_max_tokens_rules() -> Vec<ModelMaxTokensRule> {
     [
         ("claude-fable", 128_000),
@@ -519,44 +543,69 @@ fn anthropic_model_max_tokens_rules() -> Vec<ModelMaxTokensRule> {
     .collect()
 }
 
-/// Anthropic-family context window rules. Modern Claude models all expose a
-/// 200K window; the beta 1M-window variants are matched first.
+/// Anthropic-family context window rules backed by the documented model list.
+/// Models not listed here retain the conservative 200K compact fallback.
 fn anthropic_model_context_window_rules() -> Vec<ModelContextWindowRule> {
-    [("claude", 200_000)]
-        .into_iter()
-        .map(|(pattern, context_window)| ModelContextWindowRule {
-            pattern: pattern.to_string(),
-            context_window,
-        })
-        .collect()
+    [
+        ("*claude-opus-5", 1_000_000),
+        ("*claude-opus-4-8", 1_000_000),
+        ("*claude-opus-4-8-*", 1_000_000),
+        ("*claude-opus-4-7", 1_000_000),
+        ("*claude-opus-4-7-*", 1_000_000),
+        ("*claude-opus-4-6", 1_000_000),
+        ("*claude-opus-4-6-*", 1_000_000),
+        ("*claude-sonnet-5", 1_000_000),
+        ("*claude-sonnet-4-6", 1_000_000),
+        ("*claude-sonnet-4-6-*", 1_000_000),
+        ("*claude-fable-5", 1_000_000),
+        ("*claude-mythos-5", 1_000_000),
+    ]
+    .into_iter()
+    .map(|(pattern, context_window)| ModelContextWindowRule {
+        pattern: pattern.to_string(),
+        context_window,
+    })
+    .collect()
 }
 
 /// OpenAI-compatible context window rules.
 ///
-/// This preset also serves third-party OpenAI-compatible endpoints (Kimi,
-/// Moonshot, DeepSeek, Qwen, MiniMax…), whose windows differ widely from
-/// OpenAI's. Ordering matters: the most specific patterns come first.
+/// This preset also serves documented models from third-party OpenAI-compatible
+/// endpoints. Unknown or ambiguous model names retain the conservative compact
+/// fallback. Ordering matters: the most specific patterns come first.
 fn openai_model_context_window_rules() -> Vec<ModelContextWindowRule> {
     [
         // Moonshot / Kimi
-        ("kimi-for-coding", 262_144),
-        ("kimi-k2", 131_072),
-        ("kimi", 131_072),
-        ("moonshot", 131_072),
+        ("kimi-k3", 1_000_000),
+        ("kimi-k2-7-code", 262_144),
+        ("kimi-k2-6", 262_144),
+        ("kimi-k2-5", 262_144),
+        ("moonshot-v1-128k", 131_072),
+        ("moonshot-v1-32k", 32_768),
+        ("moonshot-v1-8k", 8_192),
         // DeepSeek
-        ("deepseek", 131_072),
+        ("deepseek-v4-pro", 1_000_000),
+        ("deepseek-v4-flash", 1_000_000),
         // MiniMax
-        ("minimax", 204_800),
-        // Qwen
-        ("qwen3", 131_072),
-        ("qwen", 131_072),
+        ("minimax-m2-7", 204_800),
+        ("minimax-m2-5", 204_800),
+        ("minimax-m2-1", 204_800),
+        ("minimax-m2", 204_800),
         // OpenAI official families (when the preset is reused for compatible endpoints)
-        ("gpt-5", 272_000),
+        ("gpt-5-6-sol", 1_050_000),
+        ("gpt-5-5", 1_050_000),
+        ("gpt-5-4-mini", 400_000),
+        ("gpt-5-4-nano", 400_000),
+        ("gpt-5-4-pro", 1_050_000),
+        ("gpt-5-4", 1_050_000),
+        ("gpt-5-2-chat-latest", 128_000),
+        ("gpt-5-2", 400_000),
+        ("gpt-5", 400_000),
         ("gpt-4-1", 1_047_576),
+        ("gpt-4-1-mini", 1_047_576),
+        ("gpt-4-1-nano", 1_047_576),
         ("gpt-4o", 128_000),
-        ("o1", 200_000),
-        ("o3", 200_000),
-        ("o4", 200_000),
+        ("gpt-4o-mini", 128_000),
     ]
     .into_iter()
     .map(|(pattern, context_window)| ModelContextWindowRule {

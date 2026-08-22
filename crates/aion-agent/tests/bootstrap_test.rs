@@ -23,6 +23,7 @@ fn minimal_config() -> Config {
         tools: Default::default(),
         session: Default::default(),
         compact: Default::default(),
+        compact_context_window_source: aion_config::config::CompactContextWindowSource::Default,
         plan: Default::default(),
         shell: Default::default(),
         file_cache: Default::default(),

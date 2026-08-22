@@ -85,6 +85,7 @@ mod tests {
             tools: ToolsConfig::default(),
             session: SessionConfig::default(),
             compact: CompactConfig::default(),
+            compact_context_window_source: aion_config::config::CompactContextWindowSource::Default,
             plan: PlanConfig::default(),
             shell: ShellConfig::default(),
             file_cache: FileCacheConfig::default(),

@@ -12,6 +12,7 @@ mod tests_set_config {
     use std::sync::{Arc, Mutex};
 
     use aion_config::compat::ReasoningCompat;
+    use aion_config::config::{CliArgs, CompactContextWindowSource, Config};
     use aion_providers::error::ProviderError;
     use aion_providers::provider::LlmProvider;
     use aion_tools::registry::ToolRegistry;
@@ -75,6 +76,7 @@ mod tests_set_config {
             approval_manager: None,
             protocol_writer: None,
             compact_config: aion_config::compact::CompactConfig::default(),
+            compact_context_window_source: CompactContextWindowSource::Default,
             compact_state: super::CompactState::new(),
             context_state: Default::default(),
             prompt_usage: Default::default(),
@@ -93,6 +95,38 @@ mod tests_set_config {
         engine
     }
 
+    fn make_resolved_openai_engine(model: &str, project_toml: &str) -> super::AgentEngine {
+        let directory = tempdir().unwrap();
+        if !project_toml.is_empty() {
+            std::fs::write(directory.path().join(".aionrs.toml"), project_toml).unwrap();
+        }
+        let config = Config::resolve(&CliArgs {
+            provider: Some("openai".into()),
+            api_key: Some("test-key".into()),
+            base_url: Some("https://api.openai.com/v1".into()),
+            model: Some(model.into()),
+            max_tokens: None,
+            thinking: None,
+            thinking_budget: None,
+            max_turns: None,
+            max_tool_call_malformed_turns: None,
+            max_tool_call_failure_turns: None,
+            system_prompt: None,
+            profile: None,
+            auto_approve: false,
+            project_dir: Some(directory.path().to_path_buf()),
+        })
+        .unwrap();
+
+        super::AgentEngine::new_with_provider(
+            Arc::new(NullProvider),
+            config,
+            ToolRegistry::new(),
+            Arc::new(NullOutput),
+            directory.path().to_path_buf(),
+        )
+    }
+
     // --- Cycle 1 tests (updated signature) ---
 
     #[test]
@@ -103,6 +137,61 @@ mod tests_set_config {
         assert_eq!(changes.len(), 1);
         assert!(changes[0].contains("old-model"));
         assert!(changes[0].contains("new-model"));
+    }
+
+    #[test]
+    fn set_config_model_change_recomputes_catalog_context_window() {
+        let mut engine = make_resolved_openai_engine("gpt-5", "");
+
+        let changes = engine.apply_config_update(Some("gpt-5.6-sol".into()), None, None, None, None, None);
+
+        assert_eq!(engine.compact_config.context_window, 1_050_000);
+        assert_eq!(
+            engine.compact_context_window_source,
+            CompactContextWindowSource::ModelCatalog
+        );
+        assert!(changes.iter().any(|change| change.contains("context window")));
+    }
+
+    #[test]
+    fn set_config_model_change_preserves_explicit_context_window() {
+        let mut engine = make_resolved_openai_engine(
+            "gpt-5",
+            r#"
+[compact]
+context_window = 200000
+"#,
+        );
+
+        let changes = engine.apply_config_update(Some("gpt-5.6-sol".into()), None, None, None, None, None);
+
+        assert_eq!(engine.compact_config.context_window, 200_000);
+        assert_eq!(
+            engine.compact_context_window_source,
+            CompactContextWindowSource::Explicit
+        );
+        assert!(!changes.iter().any(|change| change.contains("context window")));
+    }
+
+    #[test]
+    fn set_config_model_change_can_leave_and_reenter_catalog() {
+        let mut engine = make_engine_with_compat("gpt-5.6-sol", ProviderCompat::openai_defaults());
+        engine.compact_config.context_window = 1_050_000;
+        engine.compact_context_window_source = CompactContextWindowSource::ModelCatalog;
+
+        engine.apply_config_update(Some("unknown-model".into()), None, None, None, None, None);
+        assert_eq!(engine.compact_config.context_window, 200_000);
+        assert_eq!(
+            engine.compact_context_window_source,
+            CompactContextWindowSource::Default
+        );
+
+        engine.apply_config_update(Some("gpt-5".into()), None, None, None, None, None);
+        assert_eq!(engine.compact_config.context_window, 400_000);
+        assert_eq!(
+            engine.compact_context_window_source,
+            CompactContextWindowSource::ModelCatalog
+        );
     }
 
     #[test]
@@ -472,6 +561,7 @@ mod tests_phase6 {
             approval_manager: None,
             protocol_writer: None,
             compact_config: aion_config::compact::CompactConfig::default(),
+            compact_context_window_source: aion_config::config::CompactContextWindowSource::Default,
             compact_state: super::CompactState::new(),
             context_state: Default::default(),
             prompt_usage: Default::default(),
@@ -761,6 +851,7 @@ mod tests_compact {
             approval_manager: None,
             protocol_writer: None,
             compact_config,
+            compact_context_window_source: aion_config::config::CompactContextWindowSource::Default,
             compact_state,
             context_state: Default::default(),
             prompt_usage: Default::default(),
@@ -1552,6 +1643,7 @@ mod tests_plan_mode {
             approval_manager: None,
             protocol_writer: None,
             compact_config: aion_config::compact::CompactConfig::default(),
+            compact_context_window_source: aion_config::config::CompactContextWindowSource::Default,
             compact_state: CompactState::new(),
             context_state: Default::default(),
             prompt_usage: Default::default(),
@@ -1776,6 +1868,7 @@ mod tests_handle_command {
             approval_manager: None,
             protocol_writer: None,
             compact_config: CompactConfig::default(),
+            compact_context_window_source: aion_config::config::CompactContextWindowSource::Default,
             compact_state: CompactState::new(),
             context_state: Default::default(),
             prompt_usage: Default::default(),
@@ -2805,6 +2898,7 @@ mod tests_tool_policy_enforcement {
             approval_manager: None,
             protocol_writer: None,
             compact_config: Default::default(),
+            compact_context_window_source: aion_config::config::CompactContextWindowSource::Default,
             compact_state: CompactState::new(),
             context_state: Default::default(),
             prompt_usage: Default::default(),

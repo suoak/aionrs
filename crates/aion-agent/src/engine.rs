@@ -36,7 +36,7 @@ use crate::turn::{FinalizationReason, ToolLoopWarning, TurnGuardAction, TurnGuar
 use aion_compact::CompactLevel;
 use aion_config::compact::CompactConfig;
 use aion_config::compat::ProviderCompat;
-use aion_config::config::Config;
+use aion_config::config::{CompactContextWindowSource, Config};
 use aion_config::hooks::HookEngine;
 use aion_protocol::ToolApprovalManager;
 use aion_protocol::events::ToolCategory;
@@ -142,6 +142,9 @@ pub struct AgentEngine {
     // Compaction and plan-mode state.
     /// Static compaction thresholds, flags, and sizing configuration.
     compact_config: CompactConfig,
+    /// Whether the compact context window follows the active model or is a
+    /// user override that runtime model switches must preserve.
+    compact_context_window_source: CompactContextWindowSource,
     /// Runtime context-size and compaction circuit-breaker state.
     compact_state: CompactState,
     /// Persisted usage, source, and successful compaction counters.
@@ -204,6 +207,7 @@ impl AgentEngine {
 
         let allow_list = config.tools.allow_list.clone();
         let compact_config = config.compact.clone();
+        let compact_context_window_source = config.compact_context_window_source;
 
         let prompt_usage = PromptUsage::from_system_prompt(&system_prompt);
         let mut engine = Self {
@@ -239,6 +243,7 @@ impl AgentEngine {
             approval_manager: None,
             protocol_writer: None,
             compact_config,
+            compact_context_window_source,
             compact_state: CompactState::new(),
             context_state: ContextState::default(),
             prompt_usage,
@@ -300,6 +305,7 @@ impl AgentEngine {
 
         let allow_list = config.tools.allow_list.clone();
         let compact_config = config.compact.clone();
+        let compact_context_window_source = config.compact_context_window_source;
 
         let prompt_usage = PromptUsage::from_system_prompt(&system_prompt);
         let context_state = session.context_state.clone();
@@ -338,6 +344,7 @@ impl AgentEngine {
             approval_manager: None,
             protocol_writer: None,
             compact_config,
+            compact_context_window_source,
             compact_state,
             context_state,
             prompt_usage,
@@ -1355,6 +1362,40 @@ impl AgentEngine {
     /// Default thinking budget when "enabled" is requested without a specific budget.
     const DEFAULT_THINKING_BUDGET: u32 = 10_000;
 
+    fn recompute_compact_context_window_for_model(&mut self, changes: &mut Vec<String>) {
+        if self.compact_context_window_source == CompactContextWindowSource::Explicit {
+            return;
+        }
+
+        let old_window = self.compact_config.context_window;
+        let (new_window, new_source) = self
+            .compat
+            .context_window_for_model(&self.model)
+            .map(|window| (window, CompactContextWindowSource::ModelCatalog))
+            .unwrap_or_else(|| {
+                (
+                    CompactConfig::default().context_window,
+                    CompactContextWindowSource::Default,
+                )
+            });
+
+        self.compact_config.context_window = new_window;
+        self.compact_context_window_source = new_source;
+
+        debug!(
+            target: "aion_agent",
+            model = %self.model,
+            old_context_window = old_window,
+            context_window = new_window,
+            source = ?new_source,
+            "compact context window recomputed after runtime model change"
+        );
+
+        if old_window != new_window {
+            changes.push(format!("context window: {old_window} → {new_window}"));
+        }
+    }
+
     /// Apply a runtime config update received from the protocol layer.
     ///
     /// Returns a list of human-readable change descriptions for the Info event.
@@ -1377,6 +1418,10 @@ impl AgentEngine {
                 session.model = new_model.clone();
             }
             changes.push(format!("model: {old} → {new_model}"));
+        }
+
+        if model_changed {
+            self.recompute_compact_context_window_for_model(&mut changes);
         }
 
         if let Some(new_capability) = image_input {

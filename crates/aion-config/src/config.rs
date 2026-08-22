@@ -120,6 +120,22 @@ pub struct ConfigFile {
     pub logging: LoggingConfig,
 }
 
+#[derive(Debug, Clone, Default)]
+struct LoadedConfigFile {
+    config: ConfigFile,
+    compact_context_window: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct ConfigFieldPresence {
+    compact: Option<CompactFieldPresence>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct CompactFieldPresence {
+    context_window: Option<usize>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DefaultConfig {
     #[serde(default = "default_provider")]
@@ -281,6 +297,9 @@ pub struct Config {
     pub tools: ToolsConfig,
     pub session: SessionConfig,
     pub compact: CompactConfig,
+    /// Provenance of `compact.context_window`, used to decide whether runtime
+    /// model changes may safely recompute it.
+    pub compact_context_window_source: CompactContextWindowSource,
     pub plan: PlanConfig,
     pub shell: ShellConfig,
     pub file_cache: FileCacheConfig,
@@ -289,6 +308,16 @@ pub struct Config {
     pub vertex: Option<VertexConfig>,
     pub mcp: McpConfig,
     pub logging: LoggingConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactContextWindowSource {
+    /// Neither configuration nor the model catalog supplied a value.
+    Default,
+    /// The value was derived from the active provider's model catalog.
+    ModelCatalog,
+    /// The user set `[compact].context_window` in a configuration file.
+    Explicit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -339,7 +368,9 @@ impl Config {
         let project = load_config_file(&project_path);
 
         // 3. Merge: global <- project
-        let mut merged = merge_config_files(global, project);
+        let merged = merge_loaded_config_files(global, project);
+        let compact_context_window = merged.compact_context_window;
+        let mut merged = merged.config;
 
         // 4. If --profile specified, overlay profile settings
         if let Some(profile_name) = &cli.profile {
@@ -418,12 +449,17 @@ impl Config {
         let compat = ProviderCompat::merge(compat_defaults, user_compat);
         let thinking = resolve_cli_thinking(cli.thinking.as_deref(), cli.thinking_budget)?;
 
-        // Compact: when the user has not set `context_window` explicitly
-        // (still the global default), size it from the per-model catalog so
-        // that autocompact thresholds reflect the real model window rather
-        // than the 200K fallback. An explicit `context_window` always wins.
+        // Compact: when neither config file set `context_window`, size it from
+        // the per-model catalog so autocompact thresholds reflect the active
+        // model rather than the 200K fallback. An explicit value always wins,
+        // including an explicit value equal to that fallback.
         let mut compact = merged.compact;
-        if compact.context_window == CompactConfig::default().context_window
+        let mut compact_context_window_source = if compact_context_window.is_some() {
+            CompactContextWindowSource::Explicit
+        } else {
+            CompactContextWindowSource::Default
+        };
+        if compact_context_window_source != CompactContextWindowSource::Explicit
             && let Some(window) = compat.context_window_for_model(&model)
         {
             tracing::debug!(
@@ -433,6 +469,7 @@ impl Config {
                 "compact context_window resolved from per-model catalog"
             );
             compact.context_window = window;
+            compact_context_window_source = CompactContextWindowSource::ModelCatalog;
         }
 
         Ok(Config {
@@ -452,6 +489,7 @@ impl Config {
             tools,
             session: merged.session,
             compact,
+            compact_context_window_source,
             plan: merged.plan,
             shell: merged.shell,
             file_cache: merged.file_cache,
@@ -649,13 +687,40 @@ fn project_config_path() -> PathBuf {
     PathBuf::from(".aionrs.toml")
 }
 
-fn load_config_file(path: &Path) -> ConfigFile {
+fn load_config_file(path: &Path) -> LoadedConfigFile {
     match std::fs::read_to_string(path) {
-        Ok(content) => toml::from_str(&content).unwrap_or_else(|e| {
-            tracing::warn!(target: "aion_config", path = %path.display(), error = %e, "failed to parse config file");
-            ConfigFile::default()
-        }),
-        Err(_) => ConfigFile::default(),
+        Ok(content) => match toml::from_str::<ConfigFile>(&content) {
+            Ok(config) => {
+                let compact_context_window = match toml::from_str::<ConfigFieldPresence>(&content) {
+                    Ok(presence) => presence.compact.and_then(|compact| compact.context_window),
+                    Err(error) => {
+                        tracing::warn!(target: "aion_config", path = %path.display(), %error, "failed to inspect config field presence");
+                        None
+                    }
+                };
+                LoadedConfigFile {
+                    config,
+                    compact_context_window,
+                }
+            }
+            Err(error) => {
+                tracing::warn!(target: "aion_config", path = %path.display(), %error, "failed to parse config file");
+                LoadedConfigFile::default()
+            }
+        },
+        Err(_) => LoadedConfigFile::default(),
+    }
+}
+
+fn merge_loaded_config_files(global: LoadedConfigFile, project: LoadedConfigFile) -> LoadedConfigFile {
+    let compact_context_window = project.compact_context_window.or(global.compact_context_window);
+    let mut config = merge_config_files(global.config, project.config);
+    if let Some(context_window) = compact_context_window {
+        config.compact.context_window = context_window;
+    }
+    LoadedConfigFile {
+        config,
+        compact_context_window,
     }
 }
 

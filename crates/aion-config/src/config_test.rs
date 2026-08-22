@@ -1715,12 +1715,20 @@ max_tokens_field = "max_tokens"
 
         // No [compact] section anywhere: the catalog sizes the window from
         // the resolved model instead of the 200K fallback.
-        let config = Config::resolve(&cli_args_for(&tmp, Some("kimi-for-coding"))).unwrap();
+        let config = Config::resolve(&cli_args_for(&tmp, Some("kimi-k2.6"))).unwrap();
         assert_eq!(config.compact.context_window, 262_144);
+        assert_eq!(
+            config.compact_context_window_source,
+            CompactContextWindowSource::ModelCatalog
+        );
 
         // Unknown model keeps the global default.
         let config = Config::resolve(&cli_args_for(&tmp, Some("unknown-model-xyz"))).unwrap();
         assert_eq!(config.compact.context_window, 200_000);
+        assert_eq!(
+            config.compact_context_window_source,
+            CompactContextWindowSource::Default
+        );
     }
 
     #[test]
@@ -1735,7 +1743,27 @@ context_window = 99999
         )
         .unwrap();
 
-        let config = Config::resolve(&cli_args_for(&tmp, Some("kimi-for-coding"))).unwrap();
+        let config = Config::resolve(&cli_args_for(&tmp, Some("kimi-k2.6"))).unwrap();
         assert_eq!(config.compact.context_window, 99_999);
+    }
+
+    #[test]
+    fn test_compact_context_window_explicit_default_value_wins_over_catalog() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(".aionrs.toml"),
+            r#"
+[compact]
+context_window = 200000
+"#,
+        )
+        .unwrap();
+
+        let config = Config::resolve(&cli_args_for(&tmp, Some("kimi-k2.6"))).unwrap();
+        assert_eq!(config.compact.context_window, 200_000);
+        assert_eq!(
+            config.compact_context_window_source,
+            CompactContextWindowSource::Explicit
+        );
     }
 }
