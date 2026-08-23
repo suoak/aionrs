@@ -113,6 +113,8 @@ jsonwebtoken = "10"
 
 # Base64 encoding
 base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+sha2 = "0.10"
 
 # URL parsing
 url = "2"

@@ -3,7 +3,9 @@ use std::path::Path;
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use image::{GenericImageView, ImageFormat};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use aion_protocol::events::ToolCategory;
 use aion_types::message::{ContentBlock, ImageUrl, extension_to_image_media_type};
@@ -12,6 +14,13 @@ use aion_types::tool::{JsonSchema, ToolResult};
 use crate::{Tool, ToolExecutionOutput};
 
 const MAX_IMAGE_SIZE_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_IMAGE_PIXELS: u64 = 40_000_000;
+const MAX_IMAGE_EDGE: u32 = 2048;
+
+struct LoadedImage {
+    image_url: ImageUrl,
+    metadata: Value,
+}
 
 fn detect_image_media_type(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -34,7 +43,7 @@ impl ViewImageTool {
         Self
     }
 
-    async fn load_image(&self, input: &Value) -> Result<ImageUrl, String> {
+    async fn load_image(&self, input: &Value) -> Result<LoadedImage, String> {
         let file_path = input
             .get("file_path")
             .and_then(Value::as_str)
@@ -76,13 +85,51 @@ impl ViewImageTool {
             ));
         }
 
+        let format = ImageFormat::from_mime_type(detected_mime_type)
+            .ok_or_else(|| "Image decoder is unavailable for the detected content type".to_owned())?;
+        let (original_width, original_height) = image::ImageReader::with_format(std::io::Cursor::new(&bytes), format)
+            .into_dimensions()
+            .map_err(|error| format!("Failed to read image dimensions: {error}"))?;
+        let pixels = u64::from(original_width).saturating_mul(u64::from(original_height));
+        if pixels > MAX_IMAGE_PIXELS {
+            return Err(format!("Image exceeds the {MAX_IMAGE_PIXELS} pixel decode limit"));
+        }
+        let decoded = image::load_from_memory_with_format(&bytes, format)
+            .map_err(|error| format!("Failed to decode image: {error}"))?;
+        let should_resize = original_width > MAX_IMAGE_EDGE || original_height > MAX_IMAGE_EDGE;
+        let (delivered_bytes, delivered_width, delivered_height) = if should_resize {
+            let resized = decoded.thumbnail(MAX_IMAGE_EDGE, MAX_IMAGE_EDGE);
+            let dimensions = resized.dimensions();
+            let mut cursor = std::io::Cursor::new(Vec::new());
+            resized
+                .write_to(&mut cursor, format)
+                .map_err(|error| format!("Failed to encode downscaled image: {error}"))?;
+            (cursor.into_inner(), dimensions.0, dimensions.1)
+        } else {
+            (bytes.clone(), original_width, original_height)
+        };
+        let scale_x = f64::from(original_width) / f64::from(delivered_width);
+        let scale_y = f64::from(original_height) / f64::from(delivered_height);
+        let original_sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let delivered_sha256 = format!("{:x}", Sha256::digest(&delivered_bytes));
         let image_url = ImageUrl {
-            url: format!("data:{detected_mime_type};base64,{}", STANDARD.encode(bytes)),
+            url: format!("data:{detected_mime_type};base64,{}", STANDARD.encode(delivered_bytes)),
         };
         image_url
             .validate()
             .map_err(|error| format!("Failed to prepare image input: {error}"))?;
-        Ok(image_url)
+        Ok(LoadedImage {
+            image_url,
+            metadata: json!({
+                "mime_type": detected_mime_type,
+                "original_sha256": original_sha256,
+                "delivered_sha256": delivered_sha256,
+                "original_dimensions": { "width": original_width, "height": original_height },
+                "delivered_dimensions": { "width": delivered_width, "height": delivered_height },
+                "coordinate_scale": { "x": scale_x, "y": scale_y },
+                "downscaled": should_resize,
+            }),
+        })
     }
 
     fn success_result(file_path: &str) -> ToolResult {
@@ -144,11 +191,13 @@ impl Tool for ViewImageTool {
     async fn execute_with_follow_up(&self, input: Value) -> ToolExecutionOutput {
         let file_path = input.get("file_path").and_then(Value::as_str).unwrap_or("unknown");
         match self.load_image(&input).await {
-            Ok(image_url) => ToolExecutionOutput {
+            Ok(loaded) => ToolExecutionOutput {
                 result: Self::success_result(file_path),
-                follow_up_blocks: vec![ContentBlock::Image { image_url }],
+                follow_up_blocks: vec![ContentBlock::Image {
+                    image_url: loaded.image_url,
+                }],
                 content_blocks: None,
-                structured_content: None,
+                structured_content: Some(loaded.metadata),
                 error_code: None,
                 truncation: None,
             },
