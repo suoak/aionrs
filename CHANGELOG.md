@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.20](https://github.com/suoak/aionrs/compare/v0.2.19...v0.2.20) (2026-08-23)
+
+
+### Features
+
+* **tools:** harden view image delivery ([#19](https://github.com/suoak/aionrs/issues/19)) ([52d0fdc](https://github.com/suoak/aionrs/commit/52d0fdcfa66a0e9f7aae031603644b211054d3f8))
+
 ## [0.2.19](https://github.com/suoak/aionrs/compare/v0.2.18...v0.2.19) (2026-08-20)
 
 
