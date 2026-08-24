@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.21](https://github.com/suoak/aionrs/compare/v0.2.20...v0.2.21) (2026-08-24)
+
+
+### Miscellaneous Chores
+
+* publish the validated runtime baseline for the coordinated WorkMate release
+
 ## [0.2.20](https://github.com/suoak/aionrs/compare/v0.2.19...v0.2.20) (2026-08-23)
 
 
