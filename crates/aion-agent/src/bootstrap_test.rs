@@ -76,7 +76,7 @@ mod tests {
     }
 
     fn write_skill(project_root: &std::path::Path, name: &str) {
-        let skill_dir = project_root.join(".aionrs").join("skills").join(name);
+        let skill_dir = project_root.join(".csbu-workmate").join("skills").join(name);
         fs::create_dir_all(&skill_dir).unwrap();
         fs::write(skill_dir.join("SKILL.md"), "---\ndescription: test skill\n---\n").unwrap();
     }

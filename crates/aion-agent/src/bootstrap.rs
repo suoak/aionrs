@@ -147,7 +147,8 @@ impl AgentBootstrap {
     /// Discover skills only from the supplied directories and bundled skills.
     ///
     /// Each directory is interpreted as a project root containing
-    /// `.aionrs/skills`.
+    /// `.csbu-workmate/skills` (canonical WorkMate path) or `.aionrs/skills`
+    /// (legacy compatibility path).
     pub fn isolated_skill_dirs(mut self, dirs: Vec<PathBuf>) -> Self {
         self.extra_skill_dirs = dirs;
         self.isolate_skill_dirs = true;
