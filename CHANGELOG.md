@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.22](https://github.com/suoak/aionrs/compare/v0.2.21...v0.2.22) (2026-08-28)
+
+
+### Features
+
+* **skills:** support isolated bootstrap directories
+* **config:** resolve compact context_window from per-model catalog
+
+
+### Bug Fixes
+
+* **config:** make context windows model-safe
+* **skills:** keep WorkMate branded path in isolated skill discovery
+
 ## [0.2.21](https://github.com/suoak/aionrs/compare/v0.2.20...v0.2.21) (2026-08-24)
 
 
