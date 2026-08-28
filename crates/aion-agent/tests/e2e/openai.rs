@@ -41,6 +41,7 @@ fn openai_config(api_key: &str) -> Config {
             max_sessions: 1,
         },
         compact: aion_config::compact::CompactConfig::default(),
+        compact_context_window_source: aion_config::config::CompactContextWindowSource::Default,
         plan: aion_config::plan::PlanConfig::default(),
         shell: aion_config::shell::ShellConfig::default(),
         file_cache: aion_config::file_cache::FileCacheConfig::default(),

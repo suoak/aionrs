@@ -3,6 +3,7 @@ use super::*;
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::fs;
     use std::sync::Arc;
 
     use aion_config::config::{CliArgs, McpServerConfig, TransportType};
@@ -72,6 +73,34 @@ mod tests {
             project_dir: None,
         })
         .unwrap()
+    }
+
+    fn write_skill(project_root: &std::path::Path, name: &str) {
+        let skill_dir = project_root.join(".csbu-workmate").join("skills").join(name);
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "---\ndescription: test skill\n---\n").unwrap();
+    }
+
+    #[tokio::test]
+    async fn isolated_skill_dirs_excludes_workspace_skills() {
+        let workspace = tempfile::TempDir::new().unwrap();
+        let isolated_root = tempfile::TempDir::new().unwrap();
+        write_skill(workspace.path(), "workspace-only");
+        write_skill(isolated_root.path(), "isolated-only");
+
+        let output: Arc<dyn OutputSink> = Arc::new(NullSink);
+        let bootstrap = AgentBootstrap::new(test_config(), workspace.path().to_string_lossy(), output)
+            .isolated_skill_dirs(vec![isolated_root.path().to_path_buf()]);
+
+        let names = bootstrap
+            .load_skills(workspace.path(), None)
+            .await
+            .into_iter()
+            .map(|skill| skill.name)
+            .collect::<Vec<_>>();
+
+        assert!(names.iter().any(|name| name == "isolated-only"));
+        assert!(!names.iter().any(|name| name == "workspace-only"));
     }
 
     #[test]

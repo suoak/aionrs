@@ -86,6 +86,7 @@ max_tokens = 64000
                     pattern: "claude-sonnet-4-6".to_string(),
                     max_tokens: 64_000,
                 }]),
+                model_context_window: None,
                 api_path: Some("/chat/completions".to_string()),
                 max_request_body_bytes: Some(1_048_576),
                 include_stream_options: Some(false),
@@ -681,5 +682,165 @@ strip_patterns = ["__REASONING__"]
         };
         let merged = ProviderCompat::merge(ProviderCompat::openai_official_defaults(), user);
         assert_eq!(merged.max_tokens_field(), "max_tokens");
+    }
+
+    // -------------------------------------------------------------------------
+    // context_window_for_model tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_context_window_for_model_anthropic() {
+        let compat = ProviderCompat::anthropic_defaults();
+        assert_eq!(compat.context_window_for_model("claude-sonnet-4-6"), Some(1_000_000));
+        assert_eq!(
+            compat.context_window_for_model("anthropic.claude-sonnet-4-20250514-v1:0"),
+            None
+        );
+        assert_eq!(compat.context_window_for_model("unknown-model"), None);
+    }
+
+    #[test]
+    fn test_context_window_for_model_bedrock_uses_anthropic_rules() {
+        let compat = ProviderCompat::bedrock_defaults();
+        assert_eq!(
+            compat.context_window_for_model("anthropic.claude-opus-4-6-v1:0"),
+            Some(1_000_000)
+        );
+    }
+
+    #[test]
+    fn test_context_window_unknown_anthropic_version_uses_fallback() {
+        let compat = ProviderCompat::anthropic_defaults();
+        assert_eq!(compat.context_window_for_model("claude-sonnet-6"), None);
+        assert_eq!(compat.context_window_for_model("claude-sonnet-4.60"), None);
+    }
+
+    #[test]
+    fn test_context_window_for_model_openai_compatible_endpoints() {
+        // The plain OpenAI preset is what third-party compatible endpoints
+        // (Kimi, Moonshot, DeepSeek, MiniMax…) resolve to.
+        let compat = ProviderCompat::openai_defaults();
+        assert_eq!(compat.context_window_for_model("kimi-k2.6"), Some(262_144));
+        assert_eq!(compat.context_window_for_model("Kimi-K2.5"), Some(262_144));
+        assert_eq!(compat.context_window_for_model("moonshot-v1-128k"), Some(131_072));
+        assert_eq!(compat.context_window_for_model("moonshot-v1-32k"), Some(32_768));
+        assert_eq!(compat.context_window_for_model("deepseek-v4-pro"), Some(1_000_000));
+        assert_eq!(compat.context_window_for_model("deepseek-chat"), None);
+        assert_eq!(compat.context_window_for_model("minimax-m2.7"), Some(204_800));
+        assert_eq!(compat.context_window_for_model("gpt-4o"), Some(128_000));
+        assert_eq!(compat.context_window_for_model("totally-unknown-model"), None);
+    }
+
+    #[test]
+    fn test_context_window_for_model_gpt_5_6_uses_total_window() {
+        let compat = ProviderCompat::openai_defaults();
+        assert_eq!(compat.context_window_for_model("gpt-5.6-sol"), Some(1_050_000));
+    }
+
+    #[test]
+    fn test_context_window_for_model_gpt_5_5_uses_total_window() {
+        let compat = ProviderCompat::openai_defaults();
+        assert_eq!(compat.context_window_for_model("gpt-5.5"), Some(1_050_000));
+    }
+
+    #[test]
+    fn test_context_window_for_model_gpt_5_4_uses_total_window() {
+        let compat = ProviderCompat::openai_defaults();
+        assert_eq!(compat.context_window_for_model("gpt-5.4"), Some(1_050_000));
+    }
+
+    #[test]
+    fn test_context_window_for_model_gpt_5_4_mini_uses_variant_window() {
+        let compat = ProviderCompat::openai_defaults();
+        assert_eq!(compat.context_window_for_model("gpt-5.4-mini"), Some(400_000));
+        assert_eq!(compat.context_window_for_model("gpt-5.4-nano"), Some(400_000));
+    }
+
+    #[test]
+    fn test_context_window_for_model_gpt_5_2_uses_total_window() {
+        let compat = ProviderCompat::openai_defaults();
+        assert_eq!(compat.context_window_for_model("gpt-5.2"), Some(400_000));
+    }
+
+    #[test]
+    fn test_context_window_for_model_gpt_5_2_chat_uses_variant_window() {
+        let compat = ProviderCompat::openai_defaults();
+        assert_eq!(compat.context_window_for_model("gpt-5.2-chat-latest"), Some(128_000));
+    }
+
+    #[test]
+    fn test_context_window_for_model_gpt_5_uses_total_window() {
+        let compat = ProviderCompat::openai_defaults();
+        assert_eq!(compat.context_window_for_model("gpt-5"), Some(400_000));
+    }
+
+    #[test]
+    fn test_context_window_unknown_future_gpt_version_uses_fallback() {
+        let compat = ProviderCompat::openai_defaults();
+        assert_eq!(compat.context_window_for_model("gpt-5.7-unreleased"), None);
+        assert_eq!(compat.context_window_for_model("gpt-5.40-unreleased"), None);
+    }
+
+    #[test]
+    fn test_context_window_for_model_kimi_k3_uses_documented_window() {
+        let compat = ProviderCompat::openai_defaults();
+        assert_eq!(compat.context_window_for_model("kimi-k3"), Some(1_000_000));
+    }
+
+    #[test]
+    fn test_context_window_unknown_future_kimi_version_uses_fallback() {
+        let compat = ProviderCompat::openai_defaults();
+        assert_eq!(compat.context_window_for_model("kimi-k4-future"), None);
+    }
+
+    #[test]
+    fn test_context_window_ambiguous_qwen_model_uses_fallback() {
+        let compat = ProviderCompat::openai_defaults();
+        assert_eq!(compat.context_window_for_model("qwen3-custom"), None);
+    }
+
+    #[test]
+    fn test_context_window_unknown_future_minimax_version_uses_fallback() {
+        let compat = ProviderCompat::openai_defaults();
+        assert_eq!(compat.context_window_for_model("minimax-m3-future"), None);
+    }
+
+    #[test]
+    fn test_context_window_first_matching_pattern_wins() {
+        let compat = ProviderCompat {
+            transport: TransportCompat {
+                model_context_window: Some(vec![
+                    ModelContextWindowRule {
+                        pattern: "my-model-pro*".into(),
+                        context_window: 400_000,
+                    },
+                    ModelContextWindowRule {
+                        pattern: "my-model*".into(),
+                        context_window: 100_000,
+                    },
+                ]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(compat.context_window_for_model("my-model-pro-latest"), Some(400_000));
+    }
+
+    #[test]
+    fn test_context_window_user_rules_replace_defaults() {
+        let user = ProviderCompat {
+            transport: TransportCompat {
+                model_context_window: Some(vec![ModelContextWindowRule {
+                    pattern: "my-model".into(),
+                    context_window: 42_000,
+                }]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let merged = ProviderCompat::merge(ProviderCompat::openai_defaults(), user);
+        assert_eq!(merged.context_window_for_model("my-model"), Some(42_000));
+        // User rules fully replace the preset, mirroring model_max_tokens semantics.
+        assert_eq!(merged.context_window_for_model("kimi-k2.6"), None);
     }
 }
