@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.23](https://github.com/suoak/aionrs/compare/v0.2.22...v0.2.23) (2026-09-14)
+
+
+### Bug Fixes
+
+* **branding:** use the suoak repository in published package metadata
+
 ## [0.2.22](https://github.com/suoak/aionrs/compare/v0.2.21...v0.2.22) (2026-08-28)
 
 
