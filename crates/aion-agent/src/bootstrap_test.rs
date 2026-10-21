@@ -159,4 +159,27 @@ mod tests {
         assert!(denied.content.starts_with("No deferred tools matching"));
         assert!(!denied.content.contains("\"name\": \"DeniedDeferred\""));
     }
+
+    #[tokio::test]
+    async fn auto_approve_handle_is_shared_and_revocable() {
+        let mut config = test_config();
+        config.tools.auto_approve = true;
+        let workspace = tempfile::TempDir::new().unwrap();
+        let output: Arc<dyn OutputSink> = Arc::new(NullSink);
+        let result = AgentBootstrap::new(config, workspace.path().to_string_lossy(), output)
+            .build()
+            .await
+            .unwrap();
+        let handle = result.engine.auto_approve_handle();
+        assert!(handle.load(std::sync::atomic::Ordering::SeqCst));
+
+        handle.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            !result
+                .engine
+                .auto_approve_handle()
+                .load(std::sync::atomic::Ordering::SeqCst),
+            "engine confirmer must observe the host-owned flag"
+        );
+    }
 }

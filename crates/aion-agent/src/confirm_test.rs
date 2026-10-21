@@ -56,4 +56,29 @@ mod tests {
         assert!(confirmer.allow_list.contains("Read"));
         assert!(!confirmer.allow_list.contains("Write"));
     }
+
+    #[test]
+    fn shared_auto_approve_flag_can_be_revoked_at_runtime() {
+        let mut confirmer = ToolConfirmer::new(true, vec![]);
+        let flag = confirmer.auto_approve_flag();
+        assert!(confirmer.is_auto_approve());
+        assert_eq!(confirmer.check("ExecCommand", "rm -rf x"), ConfirmResult::Approved);
+
+        // Host leaves YOLO mode: the very next decision must stop auto-approving.
+        flag.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(!confirmer.is_auto_approve());
+
+        confirmer.set_auto_approve(true);
+        assert!(flag.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn share_auto_approve_replaces_the_flag() {
+        let mut confirmer = ToolConfirmer::new(true, vec![]);
+        let host_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        confirmer.share_auto_approve(host_flag.clone());
+        assert!(!confirmer.is_auto_approve());
+        host_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(confirmer.is_auto_approve());
+    }
 }

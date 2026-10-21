@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::types::SkillMetadata;
 
 /// A parsed permission rule for skill name matching.
@@ -54,12 +57,21 @@ pub struct SkillPermissionChecker {
     deny_rules: Vec<PermissionRule>,
     allow_rules: Vec<PermissionRule>,
     /// When true, Step 4 converts Ask → Allow (but does not bypass Deny).
-    auto_approve: bool,
+    ///
+    /// Shared so an embedding host can flip session-wide auto-approval at
+    /// runtime (e.g. leaving YOLO mode) without rebuilding the skill tool.
+    auto_approve: Arc<AtomicBool>,
 }
 
 impl SkillPermissionChecker {
     /// Create a checker from config deny/allow string lists.
     pub fn new(deny: Vec<String>, allow: Vec<String>, auto_approve: bool) -> Self {
+        Self::with_shared_auto_approve(deny, allow, Arc::new(AtomicBool::new(auto_approve)))
+    }
+
+    /// Create a checker whose auto-approve flag is shared with the host, so a
+    /// runtime permission-mode change takes effect on the next skill call.
+    pub fn with_shared_auto_approve(deny: Vec<String>, allow: Vec<String>, auto_approve: Arc<AtomicBool>) -> Self {
         Self {
             deny_rules: deny.iter().map(|s| PermissionRule::parse(s)).collect(),
             allow_rules: allow.iter().map(|s| PermissionRule::parse(s)).collect(),
@@ -90,7 +102,7 @@ impl SkillPermissionChecker {
         }
 
         // Step 4: auto_approve converts Ask → Allow.
-        if self.auto_approve {
+        if self.auto_approve.load(Ordering::SeqCst) {
             return SkillPermission::Allow;
         }
 

@@ -1,8 +1,13 @@
 use std::collections::HashSet;
 use std::io::{self, BufRead, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct ToolConfirmer {
-    auto_approve: bool,
+    /// Shared session-wide auto-approval flag. Embedding hosts flip it when the
+    /// user changes permission mode mid-session (YOLO ⇄ default) so the change
+    /// applies to the next tool call instead of being frozen at bootstrap.
+    auto_approve: Arc<AtomicBool>,
     allow_list: HashSet<String>,
 }
 
@@ -16,14 +21,29 @@ pub enum ConfirmResult {
 impl ToolConfirmer {
     pub fn new(auto_approve: bool, allow_list: Vec<String>) -> Self {
         Self {
-            auto_approve,
+            auto_approve: Arc::new(AtomicBool::new(auto_approve)),
             allow_list: allow_list.into_iter().collect(),
         }
     }
 
+    /// Replace the auto-approve flag with a host-shared one.
+    pub fn share_auto_approve(&mut self, flag: Arc<AtomicBool>) {
+        self.auto_approve = flag;
+    }
+
+    /// The shared auto-approve flag (clone of the `Arc`).
+    pub fn auto_approve_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.auto_approve)
+    }
+
+    /// Set session-wide auto-approval at runtime.
+    pub fn set_auto_approve(&self, enabled: bool) {
+        self.auto_approve.store(enabled, Ordering::SeqCst);
+    }
+
     /// Returns whether auto-approve is enabled
     pub fn is_auto_approve(&self) -> bool {
-        self.auto_approve
+        self.auto_approve.load(Ordering::SeqCst)
     }
 
     /// Add a tool name to the allow list at runtime.
@@ -34,7 +54,7 @@ impl ToolConfirmer {
 
     /// Check if the tool needs confirmation. Returns the user's decision.
     pub fn check(&mut self, tool_name: &str, tool_input_display: &str) -> ConfirmResult {
-        if self.auto_approve || self.allow_list.contains(tool_name) {
+        if self.is_auto_approve() || self.allow_list.contains(tool_name) {
             return ConfirmResult::Approved;
         }
 

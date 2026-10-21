@@ -430,6 +430,22 @@ impl AgentEngine {
         self.approval_manager = Some(mgr);
     }
 
+    /// Share a host-owned session-wide auto-approve flag with this engine's
+    /// tool confirmer. Used by the bootstrap so the Skill tool and the tool
+    /// confirmer observe the same flag.
+    pub fn share_auto_approve(&mut self, flag: Arc<std::sync::atomic::AtomicBool>) {
+        self.confirmer.lock().unwrap().share_auto_approve(flag);
+    }
+
+    /// Handle to the session-wide auto-approve flag.
+    ///
+    /// Embedding hosts (CSBU WorkMate) flip it when the user switches the
+    /// permission mode mid-session, so leaving YOLO immediately restores tool
+    /// approval instead of staying frozen at the bootstrap-time value.
+    pub fn auto_approve_handle(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        self.confirmer.lock().unwrap().auto_approve_flag()
+    }
+
     pub fn set_protocol_writer(&mut self, writer: Arc<dyn ProtocolEmitter>) {
         self.protocol_writer = Some(writer);
     }
