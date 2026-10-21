@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.24](https://github.com/suoak/aionrs/compare/v0.2.23...v0.2.24) (2026-10-21)
+
+
+### Bug Fixes
+
+* **agent:** share a runtime auto-approve flag so hosts can revoke YOLO mid-session ([#25](https://github.com/suoak/aionrs/issues/25)) ([bdcdf2a](https://github.com/suoak/aionrs/commit/bdcdf2a0226cb723ede08276e08e8ffa488bbdf6))
+
 ## [0.2.23](https://github.com/suoak/aionrs/compare/v0.2.22...v0.2.23) (2026-09-14)
 
 
