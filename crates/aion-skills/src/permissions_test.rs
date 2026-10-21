@@ -192,4 +192,16 @@ mod tests {
             panic!("expected Ask");
         }
     }
+
+    #[test]
+    fn shared_auto_approve_flag_is_observed_at_check_time() {
+        let mut skill = make_skill("needs-tools");
+        skill.allowed_tools = vec!["ExecCommand".to_string()];
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let checker = SkillPermissionChecker::with_shared_auto_approve(vec![], vec![], flag.clone());
+        assert_eq!(checker.check(&skill), SkillPermission::Allow);
+
+        flag.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(matches!(checker.check(&skill), SkillPermission::Ask { .. }));
+    }
 }

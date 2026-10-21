@@ -173,19 +173,27 @@ impl AgentBootstrap {
         let skills = self.load_skills(&environment.workspace, mcp.manager.as_deref()).await;
         let prompt_usage = self.configure_system_prompt(&environment, &skills);
 
-        self.register_agent_tools(&mut registry, &provider, &environment.workspace, skills);
+        let auto_approve_flag = Arc::new(AtomicBool::new(self.config.tools.auto_approve));
+        self.register_agent_tools(
+            &mut registry,
+            &provider,
+            &environment.workspace,
+            skills,
+            Arc::clone(&auto_approve_flag),
+        );
         let plan_active_flag = self.register_plan_tools(&mut registry);
         self.register_tool_search(&mut registry);
 
         let has_mcp = mcp.has_mcp();
         let mcp_managers = mcp.managers;
-        let engine = self.into_engine(
+        let mut engine = self.into_engine(
             provider.clone(),
             registry,
             plan_active_flag,
             environment.workspace,
             prompt_usage,
         );
+        engine.share_auto_approve(auto_approve_flag);
 
         Ok(BootstrapResult {
             engine,
@@ -337,11 +345,12 @@ impl AgentBootstrap {
         provider: &Arc<dyn LlmProvider>,
         workspace: &Path,
         skills: Vec<SkillMetadata>,
+        auto_approve_flag: Arc<AtomicBool>,
     ) {
-        let skill_checker = SkillPermissionChecker::new(
+        let skill_checker = SkillPermissionChecker::with_shared_auto_approve(
             self.config.tools.skills.deny.clone(),
             self.config.tools.skills.allow.clone(),
-            self.config.tools.auto_approve,
+            auto_approve_flag,
         );
         registry.register(Box::new(SkillTool::new(
             Arc::new(skills),
