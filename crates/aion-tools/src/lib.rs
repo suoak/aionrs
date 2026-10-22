@@ -5,6 +5,7 @@ pub mod glob;
 pub mod grep;
 pub mod read;
 pub mod registry;
+pub mod reserved;
 mod tool;
 pub mod tool_search;
 pub mod view_image;

@@ -25,6 +25,7 @@ use aion_tools::write::WriteTool;
 use anyhow::Result;
 use tracing::info;
 
+use crate::approval_link::ApprovalLink;
 use crate::context::{SystemPromptCache, build_system_prompt_with_shell_and_tool_policy};
 use crate::context_usage::PromptUsage;
 use crate::engine::AgentEngine;
@@ -72,7 +73,40 @@ pub struct AgentBootstrap {
     provider: Option<Arc<dyn LlmProvider>>,
     resume_session: Option<Session>,
     runtime_env: Vec<(String, String)>,
+    mcp_env_passthrough: Vec<String>,
     tool_policy: ToolPolicy,
+}
+
+/// Prefix of host-private environment variables (runtime token, helper CLI
+/// endpoint, conversation id …). These are meant for the agent's own
+/// `ExecCommand` / hooks and must never leak into third-party MCP servers.
+pub const MCP_PRIVATE_ENV_PREFIX: &str = "AIONUI_";
+
+/// Whether `name` is a host-private variable that MCP subprocesses must not
+/// inherit from the runtime environment.
+pub fn is_mcp_private_env(name: &str) -> bool {
+    name.to_ascii_uppercase().starts_with(MCP_PRIVATE_ENV_PREFIX)
+}
+
+/// Build the environment for one MCP server.
+///
+/// Runtime env is layered first, minus every `AIONUI_*` variable that is not
+/// listed in `passthrough`; the server's own explicit `env` entries (e.g. the
+/// team bridge's `TEAM_MCP_*` set by the host) are applied on top unchanged.
+pub fn build_mcp_server_env(
+    runtime_env: &[(String, String)],
+    server_env: Option<HashMap<String, String>>,
+    passthrough: &[String],
+) -> HashMap<String, String> {
+    let mut env: HashMap<String, String> = runtime_env
+        .iter()
+        .filter(|(name, _)| !is_mcp_private_env(name) || passthrough.iter().any(|allowed| allowed == name))
+        .cloned()
+        .collect();
+    if let Some(server_env) = server_env {
+        env.extend(server_env);
+    }
+    env
 }
 
 struct BootstrapEnvironment {
@@ -82,6 +116,10 @@ struct BootstrapEnvironment {
     // Prompt context.
     resolved_shell: ResolvedShell,
     memory_dir: Option<PathBuf>,
+
+    // Whether any policy-allowed deferred tool is registered (set after MCP
+    // connects); `ToolSearch` is only registered and advertised when true.
+    deferred_tools_available: bool,
 }
 
 #[derive(Default)]
@@ -110,6 +148,7 @@ impl AgentBootstrap {
             provider: None,
             resume_session: None,
             runtime_env: Vec::new(),
+            mcp_env_passthrough: Vec::new(),
             tool_policy: ToolPolicy::default(),
         }
     }
@@ -129,6 +168,16 @@ impl AgentBootstrap {
     /// Inject process environment for tools/hooks/MCP subprocesses owned by this engine.
     pub fn runtime_env(mut self, runtime_env: Vec<(String, String)>) -> Self {
         self.runtime_env = runtime_env;
+        self
+    }
+
+    /// Allow specific `AIONUI_*` runtime variables through to MCP servers.
+    ///
+    /// By default every `AIONUI_*` entry of [`Self::runtime_env`] is stripped
+    /// from MCP subprocess environments. Hosts that run an MCP bridge which
+    /// genuinely needs one of them list the exact names here.
+    pub fn mcp_env_passthrough(mut self, names: Vec<String>) -> Self {
+        self.mcp_env_passthrough = names;
         self
     }
 
@@ -164,22 +213,25 @@ impl AgentBootstrap {
     pub async fn build(mut self) -> Result<BootstrapResult> {
         let workspace = self.resolve_workspace_path();
         let provider = self.resolve_provider();
-        let environment = self.resolve_environment(workspace)?;
+        let mut environment = self.resolve_environment(workspace)?;
         let mut registry = self.build_builtin_registry(&environment.workspace);
 
         let builtin_names = registry.tool_names();
         let mcp = self.connect_mcp(&mut registry, &builtin_names).await;
+        environment.deferred_tools_available = self.has_policy_allowed_deferred_tools(&registry);
 
         let skills = self.load_skills(&environment.workspace, mcp.manager.as_deref()).await;
         let prompt_usage = self.configure_system_prompt(&environment, &skills);
 
         let auto_approve_flag = Arc::new(AtomicBool::new(self.config.tools.auto_approve));
+        let approval_link = ApprovalLink::new();
         self.register_agent_tools(
             &mut registry,
             &provider,
             &environment.workspace,
             skills,
             Arc::clone(&auto_approve_flag),
+            approval_link.clone(),
         );
         let plan_active_flag = self.register_plan_tools(&mut registry);
         self.register_tool_search(&mut registry);
@@ -194,6 +246,7 @@ impl AgentBootstrap {
             prompt_usage,
         );
         engine.share_auto_approve(auto_approve_flag);
+        engine.attach_approval_link(approval_link);
 
         Ok(BootstrapResult {
             engine,
@@ -218,6 +271,7 @@ impl AgentBootstrap {
             resolved_shell: resolve_shell_config(&self.config.shell)?,
             memory_dir: auto_memory_dir(&workspace_path),
             workspace: workspace_path,
+            deferred_tools_available: false,
         })
     }
 
@@ -279,11 +333,11 @@ impl AgentBootstrap {
         }
 
         for server in servers.values_mut() {
-            let mut env: HashMap<String, String> = self.runtime_env.clone().into_iter().collect();
-            if let Some(server_env) = server.env.take() {
-                env.extend(server_env);
-            }
-            server.env = Some(env);
+            server.env = Some(build_mcp_server_env(
+                &self.runtime_env,
+                server.env.take(),
+                &self.mcp_env_passthrough,
+            ));
         }
 
         servers
@@ -295,6 +349,7 @@ impl AgentBootstrap {
 
     fn configure_system_prompt(&mut self, environment: &BootstrapEnvironment, skills: &[SkillMetadata]) -> PromptUsage {
         let mut prompt_cache = SystemPromptCache::new();
+        prompt_cache.deferred_tools_available = environment.deferred_tools_available;
         let workspace = self.workspace.to_string_lossy();
         let system_prompt = build_system_prompt_with_shell_and_tool_policy(
             &mut prompt_cache,
@@ -346,6 +401,7 @@ impl AgentBootstrap {
         workspace: &Path,
         skills: Vec<SkillMetadata>,
         auto_approve_flag: Arc<AtomicBool>,
+        approval_link: ApprovalLink,
     ) {
         let skill_checker = SkillPermissionChecker::with_shared_auto_approve(
             self.config.tools.skills.deny.clone(),
@@ -364,7 +420,8 @@ impl AgentBootstrap {
             workspace.to_path_buf(),
             self.runtime_env.clone(),
             self.tool_policy.clone(),
-        );
+        )
+        .with_approval_link(approval_link);
         registry.register(Box::new(SpawnTool::new(Arc::new(spawner))));
     }
 
@@ -379,7 +436,22 @@ impl AgentBootstrap {
         plan_active_flag
     }
 
+    fn has_policy_allowed_deferred_tools(&self, registry: &ToolRegistry) -> bool {
+        registry
+            .to_tool_defs_filtered(|tool| tool.is_deferred() && self.tool_policy.allows(tool.name()))
+            .into_iter()
+            .next()
+            .is_some()
+    }
+
+    /// Register `ToolSearch` only when there is at least one deferred tool it
+    /// could load (C-02). Without deferred tools it would be dead weight in
+    /// every request and invite the model to search for nothing.
     fn register_tool_search(&self, registry: &mut ToolRegistry) {
+        if !self.has_policy_allowed_deferred_tools(registry) {
+            info!(target: "aion_agent", "no deferred tools; ToolSearch not registered");
+            return;
+        }
         let tool_defs_snapshot = registry.to_tool_defs_filtered(|tool| self.tool_policy.allows(tool.name()));
         registry.register(Box::new(ToolSearchTool::new(tool_defs_snapshot)));
     }

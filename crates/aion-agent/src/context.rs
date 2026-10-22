@@ -29,6 +29,10 @@ pub struct SystemPromptCache {
     pub(crate) last_shell_prompt: Option<String>,
     /// Track runtime tool authorization to keep guidance and skill reminders aligned.
     pub(crate) last_tool_policy: ToolPolicy,
+    /// Whether any deferred tool (and therefore `ToolSearch`) is available.
+    /// Defaults to `true`; bootstrap clears it when no deferred tools exist so
+    /// the guidance does not point the model at a missing `ToolSearch`.
+    pub(crate) deferred_tools_available: bool,
 }
 
 impl SystemPromptCache {
@@ -40,6 +44,7 @@ impl SystemPromptCache {
             last_toon_enabled: false,
             last_shell_prompt: None,
             last_tool_policy: ToolPolicy::default(),
+            deferred_tools_available: true,
         }
     }
 
@@ -66,8 +71,16 @@ impl Default for SystemPromptCache {
 ///
 /// For unrestricted agents this includes the full cross-tool guidance. For
 /// restricted agents it only names tools authorized by the runtime policy.
-fn tool_usage_guidance(tool_policy: &ToolPolicy) -> String {
+/// Trailing deferred-tool sentence of the unrestricted guidance.
+const DEFERRED_TOOL_GUIDANCE_UNRESTRICTED: &str = "\n - Some tools are deferred — only their names are visible. Before calling \
+a deferred tool, use ToolSearch to load its full schema first.";
+
+fn tool_usage_guidance(tool_policy: &ToolPolicy, deferred_tools_available: bool) -> String {
     if matches!(tool_policy, ToolPolicy::Unrestricted) {
+        if !deferred_tools_available {
+            return tool_usage_guidance(&ToolPolicy::Unrestricted, true)
+                .replace(DEFERRED_TOOL_GUIDANCE_UNRESTRICTED, "");
+        }
         return "\
 # Using your tools
  - Do NOT use ExecCommand when a dedicated tool is available. Using dedicated tools \
@@ -119,7 +132,7 @@ a deferred tool, use ToolSearch to load its full schema first."
     if tool_policy.allows("Read") && tool_policy.allows("Edit") {
         guidance.push(" - Always Read a file before editing it.".to_string());
     }
-    if tool_policy.allows("ToolSearch") {
+    if tool_policy.allows("ToolSearch") && deferred_tools_available {
         guidance.push(
             " - Some tools are deferred — only their names are visible. Before calling a deferred tool, use ToolSearch to load its full schema first."
                 .to_string(),
@@ -257,10 +270,11 @@ pub(crate) fn build_system_prompt_with_shell_and_tool_policy(
     parts.push(intro.clone());
 
     // Section: tool guidance (session permanent)
+    let cache_deferred = cache.deferred_tools_available;
     let guidance = cache
         .sections
         .entry("tool_guidance")
-        .or_insert_with(|| tool_usage_guidance(tool_policy));
+        .or_insert_with(|| tool_usage_guidance(tool_policy, cache_deferred));
     parts.push(guidance.clone());
 
     // Section: custom prompt (session permanent)

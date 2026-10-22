@@ -69,12 +69,14 @@ mod tests_set_config {
             tool_policy: Default::default(),
             confirmer: Arc::new(Mutex::new(ToolConfirmer::new(true, vec![]))),
             allow_list: vec![],
+            skill_allow_list: vec![],
             hooks: None,
             session_manager: None,
             current_session: None,
             output: Arc::new(NullOutput),
             approval_manager: None,
             protocol_writer: None,
+            approval_link: crate::approval_link::ApprovalLink::default(),
             compact_config: aion_config::compact::CompactConfig::default(),
             compact_context_window_source: CompactContextWindowSource::Default,
             compact_state: super::CompactState::new(),
@@ -554,12 +556,14 @@ mod tests_phase6 {
             tool_policy: Default::default(),
             confirmer: Arc::new(Mutex::new(ToolConfirmer::new(true, allow_list.clone()))),
             allow_list,
+            skill_allow_list: vec![],
             hooks: None,
             session_manager: None,
             current_session: None,
             output: Arc::new(NullOutput),
             approval_manager: None,
             protocol_writer: None,
+            approval_link: crate::approval_link::ApprovalLink::default(),
             compact_config: aion_config::compact::CompactConfig::default(),
             compact_context_window_source: aion_config::config::CompactContextWindowSource::Default,
             compact_state: super::CompactState::new(),
@@ -619,15 +623,80 @@ mod tests_phase6 {
 
     #[test]
     fn tc_6_23_allowed_tools_no_duplicates() {
-        let mut engine = make_engine("m", vec!["ExecCommand".to_string()]);
-        let modifiers = vec![Some(ContextModifier {
-            allowed_tools: vec!["ExecCommand".to_string(), "Read".to_string()],
-            ..Default::default()
-        })];
+        let mut engine = make_engine("m", vec![]);
+        let modifiers = vec![
+            Some(ContextModifier {
+                allowed_tools: vec!["Read".to_string(), "Grep".to_string()],
+                ..Default::default()
+            }),
+            Some(ContextModifier {
+                allowed_tools: vec!["Read".to_string()],
+                ..Default::default()
+            }),
+        ];
         engine.apply_context_modifiers(&modifiers);
-        let bash_count = engine.allow_list.iter().filter(|t| t.as_str() == "ExecCommand").count();
-        assert_eq!(bash_count, 1, "ExecCommand should appear exactly once");
-        assert!(engine.allow_list.contains(&"Read".to_string()));
+        let read_count = engine.skill_allow_list.iter().filter(|t| t.as_str() == "Read").count();
+        assert_eq!(read_count, 1, "Read should appear exactly once");
+        assert!(engine.skill_allow_list.contains(&"Grep".to_string()));
+        assert!(
+            engine.allow_list.is_empty(),
+            "skill grants must not persist into allow_list"
+        );
+    }
+
+    #[test]
+    fn skill_allowed_tools_never_grant_exec_class_tools() {
+        let mut engine = make_engine("m", vec![]);
+        engine
+            .tools
+            .register(Box::new(aion_tools::exec_command::ExecCommandTool::new_with_env(
+                std::env::temp_dir(),
+                vec![],
+            )));
+        engine.apply_context_modifiers(&[Some(ContextModifier {
+            allowed_tools: vec![
+                "ExecCommand".to_string(),
+                "Bash(git:*)".to_string(),
+                "shell".to_string(),
+                "Spawn".to_string(),
+                "Read".to_string(),
+            ],
+            ..Default::default()
+        })]);
+        assert_eq!(engine.skill_allow_list, vec!["Read".to_string()]);
+        assert!(engine.effective_allow_list().iter().all(|name| name != "ExecCommand"));
+    }
+
+    #[test]
+    fn exec_class_detection_uses_registered_category() {
+        let mut tools = ToolRegistry::new();
+        tools.register(Box::new(aion_tools::exec_command::ExecCommandTool::new_with_env(
+            std::env::temp_dir(),
+            vec![],
+        )));
+        assert!(crate::engine::is_exec_class_tool(&tools, "ExecCommand"));
+        assert!(crate::engine::is_exec_class_tool(&tools, "BASH"));
+        assert!(crate::engine::is_exec_class_tool(&tools, "Bash(npm test)"));
+        assert!(!crate::engine::is_exec_class_tool(&tools, "Read"));
+        assert!(!crate::engine::is_exec_class_tool(&tools, "mcp__docs_search"));
+    }
+
+    #[tokio::test]
+    async fn skill_allowed_tools_expire_when_the_run_ends() {
+        let mut engine = make_engine("m", vec!["Glob".to_string()]);
+        engine.apply_context_modifiers(&[Some(ContextModifier {
+            allowed_tools: vec!["Write".to_string()],
+            ..Default::default()
+        })]);
+        assert!(engine.effective_allow_list().contains(&"Write".to_string()));
+        assert!(engine.effective_allow_list().contains(&"Glob".to_string()));
+
+        // NullProvider ends the stream immediately; whatever the outcome,
+        // the skill scope must be closed afterwards.
+        let _ = engine.run("next turn", "msg-2").await;
+
+        assert!(engine.skill_allow_list.is_empty(), "skill grant leaked past its run");
+        assert_eq!(engine.effective_allow_list(), vec!["Glob".to_string()]);
     }
 
     #[test]
@@ -650,11 +719,11 @@ mod tests_phase6 {
     fn tc_6_26_none_model_does_not_overwrite() {
         let mut engine = make_engine("current-model", vec![]);
         engine.apply_context_modifiers(&[Some(ContextModifier {
-            allowed_tools: vec!["ExecCommand".to_string()],
+            allowed_tools: vec!["Read".to_string()],
             ..Default::default()
         })]);
         assert_eq!(engine.model, "current-model");
-        assert!(engine.allow_list.contains(&"ExecCommand".to_string()));
+        assert!(engine.skill_allow_list.contains(&"Read".to_string()));
     }
 
     #[test]
@@ -663,7 +732,7 @@ mod tests_phase6 {
         let modifiers = vec![
             Some(ContextModifier {
                 model: Some("model-a".to_string()),
-                allowed_tools: vec!["ExecCommand".to_string()],
+                allowed_tools: vec!["Edit".to_string()],
                 ..Default::default()
             }),
             Some(ContextModifier {
@@ -674,8 +743,8 @@ mod tests_phase6 {
         ];
         engine.apply_context_modifiers(&modifiers);
         assert_eq!(engine.model, "model-b", "last model wins");
-        assert!(engine.allow_list.contains(&"ExecCommand".to_string()));
-        assert!(engine.allow_list.contains(&"Read".to_string()));
+        assert!(engine.skill_allow_list.contains(&"Edit".to_string()));
+        assert!(engine.skill_allow_list.contains(&"Read".to_string()));
     }
 
     #[test]
@@ -844,12 +913,14 @@ mod tests_compact {
             tool_policy: Default::default(),
             confirmer: Arc::new(Mutex::new(ToolConfirmer::new(true, vec![]))),
             allow_list: vec![],
+            skill_allow_list: vec![],
             hooks: None,
             session_manager: None,
             current_session: None,
             output,
             approval_manager: None,
             protocol_writer: None,
+            approval_link: crate::approval_link::ApprovalLink::default(),
             compact_config,
             compact_context_window_source: aion_config::config::CompactContextWindowSource::Default,
             compact_state,
@@ -1636,12 +1707,14 @@ mod tests_plan_mode {
             tool_policy: Default::default(),
             confirmer: Arc::new(Mutex::new(ToolConfirmer::new(true, allow_list.clone()))),
             allow_list,
+            skill_allow_list: vec![],
             hooks: None,
             session_manager: None,
             current_session: None,
             output: Arc::new(NullOutput),
             approval_manager: None,
             protocol_writer: None,
+            approval_link: crate::approval_link::ApprovalLink::default(),
             compact_config: aion_config::compact::CompactConfig::default(),
             compact_context_window_source: aion_config::config::CompactContextWindowSource::Default,
             compact_state: CompactState::new(),
@@ -1861,12 +1934,14 @@ mod tests_handle_command {
             tool_policy: Default::default(),
             confirmer: Arc::new(Mutex::new(ToolConfirmer::new(true, vec![]))),
             allow_list: vec![],
+            skill_allow_list: vec![],
             hooks: None,
             session_manager: None,
             current_session: None,
             output: Arc::new(NullOutput),
             approval_manager: None,
             protocol_writer: None,
+            approval_link: crate::approval_link::ApprovalLink::default(),
             compact_config: CompactConfig::default(),
             compact_context_window_source: aion_config::config::CompactContextWindowSource::Default,
             compact_state: CompactState::new(),
@@ -2891,12 +2966,14 @@ mod tests_tool_policy_enforcement {
             tool_policy: ToolPolicy::allow_only(["Read"]),
             confirmer: Arc::new(Mutex::new(ToolConfirmer::new(true, vec![]))),
             allow_list: vec![],
+            skill_allow_list: vec![],
             hooks: None,
             session_manager: None,
             current_session: None,
             output: Arc::new(NullOutput),
             approval_manager: None,
             protocol_writer: None,
+            approval_link: crate::approval_link::ApprovalLink::default(),
             compact_config: Default::default(),
             compact_context_window_source: aion_config::config::CompactContextWindowSource::Default,
             compact_state: CompactState::new(),

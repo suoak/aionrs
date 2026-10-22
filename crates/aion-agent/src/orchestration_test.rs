@@ -394,4 +394,29 @@ mod tests {
             panic!("expected ToolResult");
         }
     }
+
+    #[tokio::test]
+    async fn terminal_scoped_skill_grant_skips_interactive_prompt() {
+        let confirmer = Arc::new(Mutex::new(ToolConfirmer::new(false, vec![])));
+        let approval = ApprovalProvider::Terminal {
+            confirmer: &confirmer,
+            scoped_allow: &["Read".to_string()],
+        };
+        let registry = ToolRegistry::new();
+        let call = ContentBlock::ToolUse {
+            id: "c1".into(),
+            name: "Read".into(),
+            input: json!({}),
+            extra: None,
+        };
+        let context = ToolExecutionContext::new(
+            "c1",
+            None,
+            ToolExecutionMode::Terminal,
+            &ToolExecutionScope::default(),
+            "interactive",
+        );
+        let decision = approval.approve(&registry, &call, &context).await;
+        assert!(matches!(decision, Ok(ApprovalDecision::Approved)));
+    }
 }

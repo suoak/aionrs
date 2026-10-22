@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::approval_link::{ApprovalLink, ApprovalSnapshot};
 use crate::cache_diagnostics::{CacheBreakDetector, CacheDiagnostic, CacheStats};
 use crate::commands::{CommandContext, CommandRegistry, CommandResult, CommandSpec, SlashCommand, default_registry};
 use crate::compact::auto::{CompactError, autocompact, should_autocompact};
@@ -122,6 +123,11 @@ pub struct AgentEngine {
     confirmer: Arc<Mutex<ToolConfirmer>>,
     /// Tool names currently allowed without additional approval.
     allow_list: Vec<String>,
+    /// Tools pre-approved by an inline skill's `allowed-tools`. Scoped to the
+    /// run in which the skill was invoked: cleared when that run ends, never
+    /// persisted into `allow_list` / the confirmer, and never containing
+    /// Exec-class tools (see [`is_exec_class_tool`]).
+    skill_allow_list: Vec<String>,
     /// Optional hook engine for lifecycle and tool hooks.
     hooks: Option<HookEngine>,
 
@@ -138,6 +144,9 @@ pub struct AgentEngine {
     approval_manager: Option<Arc<ToolApprovalManager>>,
     /// Optional protocol emitter used to send structured host events.
     protocol_writer: Option<Arc<dyn ProtocolEmitter>>,
+    /// Approval wiring shared with the sub-agent spawner so children inherit
+    /// the parent's confirmer / host approval channel instead of auto-approving.
+    approval_link: ApprovalLink,
 
     // Compaction and plan-mode state.
     /// Static compaction thresholds, flags, and sizing configuration.
@@ -194,7 +203,12 @@ impl AgentEngine {
         runtime_env: Vec<(String, String)>,
     ) -> Self {
         let system_prompt = config.system_prompt.clone().unwrap_or_default();
-        let confirmer = ToolConfirmer::new(config.tools.auto_approve, config.tools.allow_list.clone());
+        let confirmer = Arc::new(Mutex::new(ToolConfirmer::new(
+            config.tools.auto_approve,
+            config.tools.allow_list.clone(),
+        )));
+        let approval_link = ApprovalLink::new();
+        approval_link.set_confirmer(Arc::clone(&confirmer));
 
         let session_manager = if config.session.enabled {
             Some(SessionManager::new(
@@ -234,14 +248,16 @@ impl AgentEngine {
                 .unwrap_or(DEFAULT_MAX_TOOL_CALL_FAILURE),
             tools,
             tool_policy: ToolPolicy::default(),
-            confirmer: Arc::new(Mutex::new(confirmer)),
+            confirmer: confirmer.clone(),
             allow_list,
+            skill_allow_list: Vec::new(),
             hooks: Some(HookEngine::new_with_env(config.hooks.clone(), cwd.clone(), runtime_env)),
             session_manager,
             current_session: None,
             output,
             approval_manager: None,
             protocol_writer: None,
+            approval_link,
             compact_config,
             compact_context_window_source,
             compact_state: CompactState::new(),
@@ -292,7 +308,12 @@ impl AgentEngine {
         runtime_env: Vec<(String, String)>,
     ) -> Self {
         let system_prompt = config.system_prompt.clone().unwrap_or_default();
-        let confirmer = ToolConfirmer::new(config.tools.auto_approve, config.tools.allow_list.clone());
+        let confirmer = Arc::new(Mutex::new(ToolConfirmer::new(
+            config.tools.auto_approve,
+            config.tools.allow_list.clone(),
+        )));
+        let approval_link = ApprovalLink::new();
+        approval_link.set_confirmer(Arc::clone(&confirmer));
 
         let session_manager = if config.session.enabled {
             Some(SessionManager::new(
@@ -335,14 +356,16 @@ impl AgentEngine {
                 .unwrap_or(DEFAULT_MAX_TOOL_CALL_FAILURE),
             tools,
             tool_policy: ToolPolicy::default(),
-            confirmer: Arc::new(Mutex::new(confirmer)),
+            confirmer: confirmer.clone(),
             allow_list,
+            skill_allow_list: Vec::new(),
             hooks: Some(HookEngine::new_with_env(config.hooks.clone(), cwd, runtime_env)),
             session_manager,
             current_session: Some(session),
             output,
             approval_manager: None,
             protocol_writer: None,
+            approval_link,
             compact_config,
             compact_context_window_source,
             compact_state,
@@ -381,6 +404,27 @@ impl AgentEngine {
 
     pub fn registry_mut(&mut self) -> &mut ToolRegistry {
         &mut self.tools
+    }
+
+    /// Rebuild `ToolSearch` after tools were added at runtime (e.g. an MCP
+    /// server connected after bootstrap). `ToolSearch` is registered only
+    /// while at least one policy-allowed deferred tool exists, and its
+    /// snapshot is refreshed so newly added deferred tools are searchable.
+    pub fn refresh_tool_search(&mut self) {
+        self.tools.unregister("ToolSearch");
+        let policy = &self.tool_policy;
+        let has_deferred = self
+            .tools
+            .to_tool_defs_filtered(|tool| tool.is_deferred() && policy.allows(tool.name()))
+            .into_iter()
+            .next()
+            .is_some();
+        if has_deferred {
+            let snapshot = self.tools.to_tool_defs_filtered(|tool| policy.allows(tool.name()));
+            self.tools
+                .register(Box::new(aion_tools::tool_search::ToolSearchTool::new(snapshot)));
+        }
+        self.refresh_local_context_estimate();
     }
 
     /// Replace the runtime authorization policy for registered tools.
@@ -427,7 +471,46 @@ impl AgentEngine {
     }
 
     pub fn set_approval_manager(&mut self, mgr: Arc<ToolApprovalManager>) {
+        self.approval_link.set_approval_manager(Some(Arc::clone(&mgr)));
         self.approval_manager = Some(mgr);
+    }
+
+    /// Handle shared with sub-agent spawners. Children spawned through a
+    /// spawner holding this link route tool approval through this engine's
+    /// confirmer / host approval manager.
+    pub fn approval_link(&self) -> ApprovalLink {
+        self.approval_link.clone()
+    }
+
+    /// Attach an externally created link (bootstrap creates it before the
+    /// engine so the spawner can hold it) and publish this engine's current
+    /// approval wiring into it.
+    pub fn attach_approval_link(&mut self, link: ApprovalLink) {
+        link.set_confirmer(Arc::clone(&self.confirmer));
+        link.set_approval_manager(self.approval_manager.clone());
+        link.set_protocol_writer(self.protocol_writer.clone());
+        link.set_msg_id(&self.msg_id);
+        self.approval_link = link;
+    }
+
+    /// Route this engine's tool approval through a parent's approval wiring
+    /// (used for sub-agents). The child shares the parent's confirmer, so the
+    /// parent's runtime auto-approve flag applies to the child immediately,
+    /// and uses the host approval channel when the parent has one.
+    pub(crate) fn inherit_approval(&mut self, parent: &ApprovalSnapshot) {
+        if let Some(confirmer) = &parent.confirmer {
+            self.confirmer = Arc::clone(confirmer);
+            self.approval_link.set_confirmer(Arc::clone(confirmer));
+        }
+        if let (Some(manager), Some(writer)) = (&parent.approval_manager, &parent.protocol_writer) {
+            self.set_approval_manager(Arc::clone(manager));
+            self.set_protocol_writer(Arc::clone(writer));
+        }
+    }
+
+    /// Whether tool calls currently auto-approve (runtime flag).
+    pub fn is_auto_approve(&self) -> bool {
+        self.confirmer.lock().unwrap().is_auto_approve()
     }
 
     /// Share a host-owned session-wide auto-approve flag with this engine's
@@ -447,6 +530,7 @@ impl AgentEngine {
     }
 
     pub fn set_protocol_writer(&mut self, writer: Arc<dyn ProtocolEmitter>) {
+        self.approval_link.set_protocol_writer(Some(Arc::clone(&writer)));
         self.protocol_writer = Some(writer);
     }
 
@@ -513,7 +597,35 @@ impl AgentEngine {
             session_id = %session_id,
             msg_id = %msg_id,
         );
-        self.run_inner(content_blocks, msg_id).instrument(span).await
+        // Skill `allowed-tools` grants live only for the run that invoked
+        // the skill.
+        self.skill_allow_list.clear();
+        let result = self.run_inner(content_blocks, msg_id).instrument(span).await;
+        self.end_skill_scope();
+        result
+    }
+
+    /// Drop tool pre-approvals granted by skills during the current run.
+    fn end_skill_scope(&mut self) {
+        if !self.skill_allow_list.is_empty() {
+            debug!(
+                target: "aion_agent",
+                tools = ?self.skill_allow_list,
+                "skill allowed-tools scope ended"
+            );
+            self.skill_allow_list.clear();
+        }
+    }
+
+    /// Persistent allow list plus the active skill-scoped grants.
+    fn effective_allow_list(&self) -> Vec<String> {
+        let mut list = self.allow_list.clone();
+        for name in &self.skill_allow_list {
+            if !list.contains(name) {
+                list.push(name.clone());
+            }
+        }
+        list
     }
 
     /// Set the turn id for the NEXT run. Hosts that mint their own turn ids
@@ -551,6 +663,7 @@ impl AgentEngine {
 
     async fn run_inner(&mut self, content_blocks: Vec<ContentBlock>, msg_id: &str) -> Result<AgentResult, AgentError> {
         self.msg_id = msg_id.to_string();
+        self.approval_link.set_msg_id(msg_id);
         self.current_turn_id = Some(
             self.pending_turn_id
                 .take()
@@ -838,6 +951,7 @@ impl AgentEngine {
                 .as_ref()
                 .expect("protocol writer required for approval");
             let auto_approve = self.confirmer.lock().unwrap().is_auto_approve();
+            let allow_list = self.effective_allow_list();
             match execute_tool_calls_with_approval_and_output_limit(
                 &self.tools,
                 &executable_tool_calls,
@@ -845,7 +959,7 @@ impl AgentEngine {
                 writer,
                 &self.msg_id,
                 auto_approve,
-                &self.allow_list,
+                &allow_list,
                 self.hooks.as_mut(),
                 self.compact_level,
                 self.toon_enabled,
@@ -867,6 +981,7 @@ impl AgentEngine {
                 &self.tools,
                 &executable_tool_calls,
                 &self.confirmer,
+                &self.skill_allow_list,
                 self.hooks.as_mut(),
                 self.compact_level,
                 self.toon_enabled,
@@ -1618,10 +1733,17 @@ impl AgentEngine {
                 self.reasoning_effort = Some(effort_to_string(effort));
             }
             for tool_name in &modifier.allowed_tools {
-                if !self.allow_list.contains(tool_name) {
-                    self.allow_list.push(tool_name.clone());
+                if is_exec_class_tool(&self.tools, tool_name) {
+                    warn!(
+                        target: "aion_agent",
+                        tool = %tool_name,
+                        "ignoring skill allowed-tools entry: Exec-class tools always require approval"
+                    );
+                    continue;
                 }
-                self.confirmer.lock().unwrap().add_to_allow_list(tool_name);
+                if !self.skill_allow_list.contains(tool_name) {
+                    self.skill_allow_list.push(tool_name.clone());
+                }
             }
 
             // Handle plan mode transitions
@@ -1744,6 +1866,39 @@ struct ToolRoundOutput {
     tool_call_failure_fingerprint: Option<ToolCallFailureFingerprint>,
     /// Whether the round had a non-malformed call and every result was an error.
     all_tool_results_error: bool,
+}
+
+/// Tool names (case-insensitive, `Name(args)` pattern suffix ignored) that are
+/// treated as command execution even when not registered under that name.
+const EXEC_CLASS_TOOL_NAMES: &[&str] = &[
+    "execcommand",
+    "exec",
+    "exec_command",
+    "shell",
+    "bash",
+    "sh",
+    "zsh",
+    "powershell",
+    "pwsh",
+    "cmd",
+    "terminal",
+    "run_shell_command",
+    "spawn",
+];
+
+/// Whether a skill `allowed-tools` entry names an Exec-class tool. Such
+/// tools are never pre-approved by a skill: either the registered tool has
+/// [`ToolCategory::Exec`], or the name is a well-known shell alias.
+pub(crate) fn is_exec_class_tool(tools: &ToolRegistry, name: &str) -> bool {
+    let base = name.split('(').next().unwrap_or(name).trim();
+    if tools
+        .get(base)
+        .is_some_and(|tool| tool.category() == ToolCategory::Exec)
+    {
+        return true;
+    }
+    let lower = base.to_ascii_lowercase();
+    EXEC_CLASS_TOOL_NAMES.contains(&lower.as_str())
 }
 
 fn append_tool_loop_warning(tool_results: &mut [ContentBlock], warning: ToolLoopWarning) {

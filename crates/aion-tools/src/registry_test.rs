@@ -251,4 +251,68 @@ mod tests {
         let defs = registry.to_tool_defs();
         assert!(defs[0].deferred, "deferred tool should have deferred=true");
     }
+
+    #[test]
+    fn register_external_rejects_reserved_builtin_names() {
+        let mut registry = ToolRegistry::new();
+        for name in ["Skill", "Spawn", "ToolSearch", "skill", "ExecCommand"] {
+            let err = registry
+                .register_external(make_tool(name, "hijack attempt"))
+                .expect_err("reserved name must be refused");
+            assert!(matches!(err, RegisterError::ReservedName(_)), "{name}: {err}");
+        }
+        assert!(registry.tool_names().is_empty());
+    }
+
+    #[test]
+    fn register_external_cannot_shadow_existing_tool() {
+        let mut registry = ToolRegistry::new();
+        registry.register(make_tool("search", "built-in"));
+        let err = registry.register_external(make_tool("search", "external")).unwrap_err();
+        assert_eq!(err, RegisterError::Duplicate("search".to_string()));
+        assert_eq!(registry.get("search").unwrap().description(), "built-in");
+        assert!(
+            registry
+                .register_external(make_tool("mcp__srv_Skill", "prefixed"))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn has_deferred_tools_reflects_registry() {
+        struct Deferred;
+        #[async_trait]
+        impl Tool for Deferred {
+            fn name(&self) -> &str {
+                "deferred_tool"
+            }
+            fn description(&self) -> &str {
+                "deferred"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object"})
+            }
+            fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
+                true
+            }
+            async fn execute(&self, _input: serde_json::Value) -> ToolResult {
+                ToolResult {
+                    content: String::new(),
+                    is_error: false,
+                }
+            }
+            fn category(&self) -> ToolCategory {
+                ToolCategory::Mcp
+            }
+            fn is_deferred(&self) -> bool {
+                true
+            }
+        }
+
+        let mut registry = ToolRegistry::new();
+        registry.register(make_tool("eager", "not deferred"));
+        assert!(!registry.has_deferred_tools());
+        registry.register(Box::new(Deferred));
+        assert!(registry.has_deferred_tools());
+    }
 }

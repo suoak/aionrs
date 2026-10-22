@@ -14,6 +14,7 @@ use aion_tools::registry::ToolRegistry;
 use aion_tools::write::WriteTool;
 use aion_types::message::TokenUsage;
 
+use crate::approval_link::ApprovalLink;
 use crate::engine::AgentEngine;
 use crate::output::OutputSink;
 use crate::output::null_sink::NullSink;
@@ -31,12 +32,21 @@ pub use aion_types::spawner::{ForkOverrides, Spawner, SubAgentConfig, SubAgentRe
 ///
 /// Children inherit the parent's runtime tool policy. Fork overrides can
 /// further narrow that policy, but cannot restore tools denied to the parent.
+///
+/// Children also inherit the parent's approval mode. With an attached
+/// [`ApprovalLink`] they share the parent's confirmer (and therefore the
+/// session-wide runtime auto-approve flag) and its host approval channel, so
+/// a parent in the default mode gets a `tool_request` for every child
+/// `ExecCommand` / write, and flipping the parent to YOLO applies to children
+/// immediately. Without a link, children follow `config.tools.auto_approve`
+/// of the spawner's base config; they are never force-approved.
 pub struct AgentSpawner {
     provider: Arc<dyn LlmProvider>,
     base_config: Config,
     cwd: PathBuf,
     runtime_env: Vec<(String, String)>,
     tool_policy: ToolPolicy,
+    approval_link: Option<ApprovalLink>,
 }
 
 impl AgentSpawner {
@@ -57,23 +67,21 @@ impl AgentSpawner {
             cwd,
             runtime_env,
             tool_policy,
+            approval_link: None,
         }
     }
 
-    /// Spawn a single sub-agent and wait for result.
-    pub async fn spawn_one(&self, sub_config: SubAgentConfig) -> SubAgentResult {
-        let mut config = self.base_config.clone();
-        config.max_turns = Some(sub_config.max_turns);
-        config.max_tokens = Some(sub_config.max_tokens);
-        if let Some(sp) = sub_config.system_prompt.clone() {
-            config.system_prompt = Some(sp);
-        }
-        config.session.enabled = false;
-        config.tools.auto_approve = true;
+    /// Route child tool approval through the parent engine that owns `link`.
+    pub fn with_approval_link(mut self, link: ApprovalLink) -> Self {
+        self.approval_link = Some(link);
+        self
+    }
 
-        tracing::info!(target: "aion_agent", cwd = %self.cwd.display(), "sub-agent spawned with workspace cwd");
-
-        let child_policy = effective_child_tool_policy(&self.tool_policy, &[]);
+    /// Build a child engine wired to the parent's approval state.
+    ///
+    /// Returns the engine and the message id children should report in
+    /// protocol events (the parent turn's id when known).
+    fn build_child_engine(&self, config: Config, child_policy: ToolPolicy) -> (AgentEngine, String) {
         let tools = build_tool_registry(&child_policy, &self.cwd, &self.runtime_env);
         let output: Arc<dyn OutputSink> = Arc::new(NullSink);
         let mut engine = AgentEngine::new_with_provider_and_env(
@@ -86,7 +94,37 @@ impl AgentSpawner {
         );
         engine.set_tool_policy(child_policy);
 
-        match engine.run(&sub_config.prompt, "").await {
+        let mut msg_id = String::new();
+        if let Some(link) = &self.approval_link {
+            let snapshot = link.snapshot();
+            engine.inherit_approval(&snapshot);
+            msg_id = snapshot.msg_id;
+        }
+        tracing::info!(
+            target: "aion_agent",
+            auto_approve = engine.is_auto_approve(),
+            host_approval = self.approval_link.as_ref().is_some_and(|link| link.snapshot().approval_manager.is_some()),
+            "sub-agent approval inherited from parent",
+        );
+        (engine, msg_id)
+    }
+
+    /// Spawn a single sub-agent and wait for result.
+    pub async fn spawn_one(&self, sub_config: SubAgentConfig) -> SubAgentResult {
+        let mut config = self.base_config.clone();
+        config.max_turns = Some(sub_config.max_turns);
+        config.max_tokens = Some(sub_config.max_tokens);
+        if let Some(sp) = sub_config.system_prompt.clone() {
+            config.system_prompt = Some(sp);
+        }
+        config.session.enabled = false;
+
+        tracing::info!(target: "aion_agent", cwd = %self.cwd.display(), "sub-agent spawned with workspace cwd");
+
+        let child_policy = effective_child_tool_policy(&self.tool_policy, &[]);
+        let (mut engine, msg_id) = self.build_child_engine(config, child_policy);
+
+        match engine.run(&sub_config.prompt, &msg_id).await {
             Ok(result) => SubAgentResult {
                 name: sub_config.name,
                 text: result.text,
@@ -137,6 +175,7 @@ impl AgentSpawner {
             cwd: self.cwd.clone(),
             runtime_env: self.runtime_env.clone(),
             tool_policy: self.tool_policy.clone(),
+            approval_link: self.approval_link.clone(),
         }
     }
 }
@@ -151,26 +190,15 @@ impl Spawner for AgentSpawner {
             config.system_prompt = Some(sp);
         }
         config.session.enabled = false;
-        config.tools.auto_approve = true;
         if let Some(model) = overrides.model.clone() {
             config.model = model;
         }
 
         let child_policy = effective_child_tool_policy(&self.tool_policy, &overrides.allowed_tools);
-        let tools = build_tool_registry(&child_policy, &self.cwd, &self.runtime_env);
-        let output: Arc<dyn OutputSink> = Arc::new(NullSink);
-        let mut engine = AgentEngine::new_with_provider_and_env(
-            self.provider.clone(),
-            config,
-            tools,
-            output,
-            self.cwd.clone(),
-            self.runtime_env.clone(),
-        );
+        let (mut engine, msg_id) = self.build_child_engine(config, child_policy);
         engine.set_initial_reasoning_effort(overrides.effort.clone());
-        engine.set_tool_policy(child_policy);
 
-        match engine.run(&sub_config.prompt, "").await {
+        match engine.run(&sub_config.prompt, &msg_id).await {
             Ok(result) => SubAgentResult {
                 name: sub_config.name,
                 text: result.text,

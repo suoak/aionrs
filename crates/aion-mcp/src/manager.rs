@@ -421,6 +421,14 @@ impl McpManager {
             next_id: AtomicU64::new(10),
         }
     }
+
+    /// Test-only: replace the advertised tool list of an existing server.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn set_tools_for_test(&mut self, server: &str, tools: Vec<McpToolDef>) {
+        if let Some(entry) = self.servers.get_mut(server) {
+            entry.tools = tools;
+        }
+    }
 }
 
 #[cfg(test)]
