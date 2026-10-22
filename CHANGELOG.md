@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.25](https://github.com/suoak/aionrs/compare/v0.2.24...v0.2.25) (2026-10-22)
+
+
+### Bug Fixes
+
+* **agent:** sub-agents inherit the parent's approval mode (shared confirmer / runtime auto-approve flag / host approval channel) instead of hard-coded auto-approve ([#27](https://github.com/suoak/aionrs/issues/27)) ([7709105](https://github.com/suoak/aionrs/commit/7709105))
+* **mcp:** never pass `AIONUI_*` host variables (e.g. `AIONUI_RUNTIME_TOKEN`) to MCP server processes; opt-in passthrough via `AgentBootstrap::mcp_env_passthrough` ([#27](https://github.com/suoak/aionrs/issues/27))
+* **agent:** skill `allowed-tools` pre-approval is scoped to the invoking run and never covers Exec-class tools ([#27](https://github.com/suoak/aionrs/issues/27))
+* **tools:** reserved built-in tool names (`Skill`, `Spawn`, `ToolSearch`, …); MCP tools can no longer shadow built-ins ([#27](https://github.com/suoak/aionrs/issues/27))
+* **agent:** register `ToolSearch` only when a deferred tool exists ([#27](https://github.com/suoak/aionrs/issues/27))
+
 ## [0.2.24](https://github.com/suoak/aionrs/compare/v0.2.23...v0.2.24) (2026-10-21)
 
 
