@@ -12,6 +12,22 @@ use crate::protocol::{JsonRpcRequest, JsonRpcResponse};
 
 type PendingResponses = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<JsonRpcResponse, McpError>>>>>;
 
+/// Prefix of host-private environment variables never inherited by MCP servers.
+pub const PRIVATE_ENV_PREFIX: &str = "AIONUI_";
+
+/// Names of `AIONUI_*` variables in the current process environment that are
+/// not explicitly provided in `explicit` and therefore must be removed from a
+/// spawned MCP server's environment.
+pub fn inherited_private_env(explicit: &HashMap<String, String>) -> Vec<std::ffi::OsString> {
+    std::env::vars_os()
+        .map(|(name, _)| name)
+        .filter(|name| {
+            let upper = name.to_string_lossy().to_ascii_uppercase();
+            upper.starts_with(PRIVATE_ENV_PREFIX) && !explicit.contains_key(name.to_string_lossy().as_ref())
+        })
+        .collect()
+}
+
 /// Stdio transport with one response reader and request-id routing.
 pub struct StdioTransport {
     stdin: Mutex<BufWriter<ChildStdin>>,
@@ -29,8 +45,14 @@ impl StdioTransport {
             .args(args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit())
-            .envs(env);
+            .stderr(std::process::Stdio::inherit());
+        // Host-private `AIONUI_*` variables of the embedding process (runtime
+        // tokens, local auth, …) must not be inherited by third-party MCP
+        // servers. Only names the caller set explicitly in `env` survive.
+        for name in inherited_private_env(env) {
+            cmd.env_remove(name);
+        }
+        cmd.envs(env);
 
         let mut child = cmd
             .spawn()
@@ -150,3 +172,7 @@ impl McpTransport for StdioTransport {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "stdio_test.rs"]
+mod stdio_test;

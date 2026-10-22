@@ -73,7 +73,40 @@ pub struct AgentBootstrap {
     provider: Option<Arc<dyn LlmProvider>>,
     resume_session: Option<Session>,
     runtime_env: Vec<(String, String)>,
+    mcp_env_passthrough: Vec<String>,
     tool_policy: ToolPolicy,
+}
+
+/// Prefix of host-private environment variables (runtime token, helper CLI
+/// endpoint, conversation id …). These are meant for the agent's own
+/// `ExecCommand` / hooks and must never leak into third-party MCP servers.
+pub const MCP_PRIVATE_ENV_PREFIX: &str = "AIONUI_";
+
+/// Whether `name` is a host-private variable that MCP subprocesses must not
+/// inherit from the runtime environment.
+pub fn is_mcp_private_env(name: &str) -> bool {
+    name.to_ascii_uppercase().starts_with(MCP_PRIVATE_ENV_PREFIX)
+}
+
+/// Build the environment for one MCP server.
+///
+/// Runtime env is layered first, minus every `AIONUI_*` variable that is not
+/// listed in `passthrough`; the server's own explicit `env` entries (e.g. the
+/// team bridge's `TEAM_MCP_*` set by the host) are applied on top unchanged.
+pub fn build_mcp_server_env(
+    runtime_env: &[(String, String)],
+    server_env: Option<HashMap<String, String>>,
+    passthrough: &[String],
+) -> HashMap<String, String> {
+    let mut env: HashMap<String, String> = runtime_env
+        .iter()
+        .filter(|(name, _)| !is_mcp_private_env(name) || passthrough.iter().any(|allowed| allowed == name))
+        .cloned()
+        .collect();
+    if let Some(server_env) = server_env {
+        env.extend(server_env);
+    }
+    env
 }
 
 struct BootstrapEnvironment {
@@ -111,6 +144,7 @@ impl AgentBootstrap {
             provider: None,
             resume_session: None,
             runtime_env: Vec::new(),
+            mcp_env_passthrough: Vec::new(),
             tool_policy: ToolPolicy::default(),
         }
     }
@@ -130,6 +164,16 @@ impl AgentBootstrap {
     /// Inject process environment for tools/hooks/MCP subprocesses owned by this engine.
     pub fn runtime_env(mut self, runtime_env: Vec<(String, String)>) -> Self {
         self.runtime_env = runtime_env;
+        self
+    }
+
+    /// Allow specific `AIONUI_*` runtime variables through to MCP servers.
+    ///
+    /// By default every `AIONUI_*` entry of [`Self::runtime_env`] is stripped
+    /// from MCP subprocess environments. Hosts that run an MCP bridge which
+    /// genuinely needs one of them list the exact names here.
+    pub fn mcp_env_passthrough(mut self, names: Vec<String>) -> Self {
+        self.mcp_env_passthrough = names;
         self
     }
 
@@ -283,11 +327,11 @@ impl AgentBootstrap {
         }
 
         for server in servers.values_mut() {
-            let mut env: HashMap<String, String> = self.runtime_env.clone().into_iter().collect();
-            if let Some(server_env) = server.env.take() {
-                env.extend(server_env);
-            }
-            server.env = Some(env);
+            server.env = Some(build_mcp_server_env(
+                &self.runtime_env,
+                server.env.take(),
+                &self.mcp_env_passthrough,
+            ));
         }
 
         servers

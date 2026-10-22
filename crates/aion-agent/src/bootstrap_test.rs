@@ -182,4 +182,58 @@ mod tests {
             "engine confirmer must observe the host-owned flag"
         );
     }
+
+    #[test]
+    fn mcp_server_env_strips_aionui_runtime_vars() {
+        let mut config = test_config();
+        config.mcp.servers.insert(
+            "third-party".to_string(),
+            McpServerConfig {
+                transport: TransportType::Stdio,
+                command: Some("server".to_string()),
+                args: None,
+                env: None,
+                url: None,
+                headers: None,
+                deferred: None,
+                startup_timeout_ms: None,
+            },
+        );
+
+        let output: Arc<dyn OutputSink> = Arc::new(NullSink);
+        let bootstrap = AgentBootstrap::new(config, "/tmp", output).runtime_env(vec![
+            ("AIONUI_RUNTIME_TOKEN".to_string(), "secret".to_string()),
+            ("AIONUI_BASE_URL".to_string(), "http://127.0.0.1:1".to_string()),
+            ("aionui_lowercase".to_string(), "x".to_string()),
+            ("PATH_HINT".to_string(), "keep".to_string()),
+        ]);
+
+        let servers = bootstrap.mcp_servers_with_runtime_env();
+        let env = servers["third-party"].env.as_ref().unwrap();
+        assert!(!env.contains_key("AIONUI_RUNTIME_TOKEN"), "runtime token leaked to MCP");
+        assert!(!env.contains_key("AIONUI_BASE_URL"));
+        assert!(!env.contains_key("aionui_lowercase"));
+        assert_eq!(env.get("PATH_HINT").map(String::as_str), Some("keep"));
+    }
+
+    #[test]
+    fn mcp_server_env_passthrough_and_explicit_bridge_env_survive() {
+        let runtime_env = vec![
+            ("AIONUI_RUNTIME_TOKEN".to_string(), "secret".to_string()),
+            ("AIONUI_CONVERSATION_ID".to_string(), "conv-1".to_string()),
+        ];
+        let bridge_env = HashMap::from([
+            ("TEAM_MCP_PORT".to_string(), "4321".to_string()),
+            ("TEAM_MCP_TOKEN".to_string(), "bridge".to_string()),
+        ]);
+
+        let env = build_mcp_server_env(&runtime_env, Some(bridge_env), &["AIONUI_CONVERSATION_ID".to_string()]);
+
+        assert!(!env.contains_key("AIONUI_RUNTIME_TOKEN"));
+        assert_eq!(env.get("AIONUI_CONVERSATION_ID").map(String::as_str), Some("conv-1"));
+        assert_eq!(env.get("TEAM_MCP_PORT").map(String::as_str), Some("4321"));
+        assert_eq!(env.get("TEAM_MCP_TOKEN").map(String::as_str), Some("bridge"));
+        assert!(is_mcp_private_env("AIONUI_RUNTIME_TOKEN"));
+        assert!(!is_mcp_private_env("TEAM_MCP_TOKEN"));
+    }
 }
