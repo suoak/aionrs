@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::approval_link::{ApprovalLink, ApprovalSnapshot};
 use crate::cache_diagnostics::{CacheBreakDetector, CacheDiagnostic, CacheStats};
 use crate::commands::{CommandContext, CommandRegistry, CommandResult, CommandSpec, SlashCommand, default_registry};
 use crate::compact::auto::{CompactError, autocompact, should_autocompact};
@@ -138,6 +139,9 @@ pub struct AgentEngine {
     approval_manager: Option<Arc<ToolApprovalManager>>,
     /// Optional protocol emitter used to send structured host events.
     protocol_writer: Option<Arc<dyn ProtocolEmitter>>,
+    /// Approval wiring shared with the sub-agent spawner so children inherit
+    /// the parent's confirmer / host approval channel instead of auto-approving.
+    approval_link: ApprovalLink,
 
     // Compaction and plan-mode state.
     /// Static compaction thresholds, flags, and sizing configuration.
@@ -194,7 +198,12 @@ impl AgentEngine {
         runtime_env: Vec<(String, String)>,
     ) -> Self {
         let system_prompt = config.system_prompt.clone().unwrap_or_default();
-        let confirmer = ToolConfirmer::new(config.tools.auto_approve, config.tools.allow_list.clone());
+        let confirmer = Arc::new(Mutex::new(ToolConfirmer::new(
+            config.tools.auto_approve,
+            config.tools.allow_list.clone(),
+        )));
+        let approval_link = ApprovalLink::new();
+        approval_link.set_confirmer(Arc::clone(&confirmer));
 
         let session_manager = if config.session.enabled {
             Some(SessionManager::new(
@@ -234,7 +243,7 @@ impl AgentEngine {
                 .unwrap_or(DEFAULT_MAX_TOOL_CALL_FAILURE),
             tools,
             tool_policy: ToolPolicy::default(),
-            confirmer: Arc::new(Mutex::new(confirmer)),
+            confirmer: confirmer.clone(),
             allow_list,
             hooks: Some(HookEngine::new_with_env(config.hooks.clone(), cwd.clone(), runtime_env)),
             session_manager,
@@ -242,6 +251,7 @@ impl AgentEngine {
             output,
             approval_manager: None,
             protocol_writer: None,
+            approval_link,
             compact_config,
             compact_context_window_source,
             compact_state: CompactState::new(),
@@ -292,7 +302,12 @@ impl AgentEngine {
         runtime_env: Vec<(String, String)>,
     ) -> Self {
         let system_prompt = config.system_prompt.clone().unwrap_or_default();
-        let confirmer = ToolConfirmer::new(config.tools.auto_approve, config.tools.allow_list.clone());
+        let confirmer = Arc::new(Mutex::new(ToolConfirmer::new(
+            config.tools.auto_approve,
+            config.tools.allow_list.clone(),
+        )));
+        let approval_link = ApprovalLink::new();
+        approval_link.set_confirmer(Arc::clone(&confirmer));
 
         let session_manager = if config.session.enabled {
             Some(SessionManager::new(
@@ -335,7 +350,7 @@ impl AgentEngine {
                 .unwrap_or(DEFAULT_MAX_TOOL_CALL_FAILURE),
             tools,
             tool_policy: ToolPolicy::default(),
-            confirmer: Arc::new(Mutex::new(confirmer)),
+            confirmer: confirmer.clone(),
             allow_list,
             hooks: Some(HookEngine::new_with_env(config.hooks.clone(), cwd, runtime_env)),
             session_manager,
@@ -343,6 +358,7 @@ impl AgentEngine {
             output,
             approval_manager: None,
             protocol_writer: None,
+            approval_link,
             compact_config,
             compact_context_window_source,
             compact_state,
@@ -427,7 +443,46 @@ impl AgentEngine {
     }
 
     pub fn set_approval_manager(&mut self, mgr: Arc<ToolApprovalManager>) {
+        self.approval_link.set_approval_manager(Some(Arc::clone(&mgr)));
         self.approval_manager = Some(mgr);
+    }
+
+    /// Handle shared with sub-agent spawners. Children spawned through a
+    /// spawner holding this link route tool approval through this engine's
+    /// confirmer / host approval manager.
+    pub fn approval_link(&self) -> ApprovalLink {
+        self.approval_link.clone()
+    }
+
+    /// Attach an externally created link (bootstrap creates it before the
+    /// engine so the spawner can hold it) and publish this engine's current
+    /// approval wiring into it.
+    pub fn attach_approval_link(&mut self, link: ApprovalLink) {
+        link.set_confirmer(Arc::clone(&self.confirmer));
+        link.set_approval_manager(self.approval_manager.clone());
+        link.set_protocol_writer(self.protocol_writer.clone());
+        link.set_msg_id(&self.msg_id);
+        self.approval_link = link;
+    }
+
+    /// Route this engine's tool approval through a parent's approval wiring
+    /// (used for sub-agents). The child shares the parent's confirmer, so the
+    /// parent's runtime auto-approve flag applies to the child immediately,
+    /// and uses the host approval channel when the parent has one.
+    pub(crate) fn inherit_approval(&mut self, parent: &ApprovalSnapshot) {
+        if let Some(confirmer) = &parent.confirmer {
+            self.confirmer = Arc::clone(confirmer);
+            self.approval_link.set_confirmer(Arc::clone(confirmer));
+        }
+        if let (Some(manager), Some(writer)) = (&parent.approval_manager, &parent.protocol_writer) {
+            self.set_approval_manager(Arc::clone(manager));
+            self.set_protocol_writer(Arc::clone(writer));
+        }
+    }
+
+    /// Whether tool calls currently auto-approve (runtime flag).
+    pub fn is_auto_approve(&self) -> bool {
+        self.confirmer.lock().unwrap().is_auto_approve()
     }
 
     /// Share a host-owned session-wide auto-approve flag with this engine's
@@ -447,6 +502,7 @@ impl AgentEngine {
     }
 
     pub fn set_protocol_writer(&mut self, writer: Arc<dyn ProtocolEmitter>) {
+        self.approval_link.set_protocol_writer(Some(Arc::clone(&writer)));
         self.protocol_writer = Some(writer);
     }
 
@@ -551,6 +607,7 @@ impl AgentEngine {
 
     async fn run_inner(&mut self, content_blocks: Vec<ContentBlock>, msg_id: &str) -> Result<AgentResult, AgentError> {
         self.msg_id = msg_id.to_string();
+        self.approval_link.set_msg_id(msg_id);
         self.current_turn_id = Some(
             self.pending_turn_id
                 .take()

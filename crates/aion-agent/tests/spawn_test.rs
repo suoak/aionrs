@@ -206,3 +206,194 @@ async fn test_spawn_agent_error_captured() {
         result.text
     );
 }
+
+// ---------------------------------------------------------------------------
+// Sub-agent approval inheritance (M7 / E2)
+// ---------------------------------------------------------------------------
+
+mod approval_inheritance {
+    use std::io;
+    use std::sync::{Arc, Mutex};
+
+    use aion_agent::engine::AgentEngine;
+    use aion_agent::output::null_sink::NullSink;
+    use aion_agent::spawner::{AgentSpawner, SubAgentConfig};
+    use aion_agent::tool_policy::ToolPolicy;
+    use aion_protocol::events::ProtocolEvent;
+    use aion_protocol::writer::ProtocolEmitter;
+    use aion_protocol::{ToolApprovalManager, ToolApprovalResult};
+    use aion_tools::registry::ToolRegistry;
+    use aion_types::llm::LlmEvent;
+    use aion_types::message::{StopReason, TokenUsage};
+    use serde_json::json;
+
+    use super::common::{MockLlmProvider, test_config};
+
+    #[derive(Default)]
+    struct CapturingEmitter {
+        requests: Mutex<Vec<(String, String, String)>>,
+    }
+
+    impl ProtocolEmitter for CapturingEmitter {
+        fn emit(&self, event: &ProtocolEvent) -> io::Result<()> {
+            if let ProtocolEvent::ToolRequest {
+                msg_id, call_id, tool, ..
+            } = event
+            {
+                self.requests
+                    .lock()
+                    .unwrap()
+                    .push((msg_id.clone(), call_id.clone(), tool.name.clone()));
+            }
+            Ok(())
+        }
+    }
+
+    impl CapturingEmitter {
+        fn tool_requests(&self) -> Vec<(String, String, String)> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    fn exec_then_finish(call_id: &str) -> MockLlmProvider {
+        MockLlmProvider::with_turns(vec![
+            vec![
+                LlmEvent::ToolUse {
+                    id: call_id.to_string(),
+                    name: "ExecCommand".to_string(),
+                    input: json!({ "cmd": "echo sub-agent" }),
+                    extra: None,
+                },
+                LlmEvent::Done {
+                    stop_reason: StopReason::ToolUse,
+                    usage: TokenUsage::default(),
+                },
+            ],
+            vec![
+                LlmEvent::TextDelta("child finished".to_string()),
+                LlmEvent::Done {
+                    stop_reason: StopReason::EndTurn,
+                    usage: TokenUsage::default(),
+                },
+            ],
+        ])
+    }
+
+    fn sub_config() -> SubAgentConfig {
+        SubAgentConfig {
+            name: "child".to_string(),
+            prompt: "run a command".to_string(),
+            max_turns: 5,
+            max_tokens: 1024,
+            system_prompt: None,
+        }
+    }
+
+    /// Parent engine in the default (ask) mode wired to a host approval channel.
+    fn parent_engine(auto_approve: bool) -> (AgentEngine, Arc<ToolApprovalManager>, Arc<CapturingEmitter>) {
+        let mut config = test_config();
+        config.tools.auto_approve = auto_approve;
+        let mut engine = AgentEngine::new_with_provider(
+            Arc::new(MockLlmProvider::with_text_response("parent")),
+            config,
+            ToolRegistry::new(),
+            Arc::new(NullSink),
+            std::env::temp_dir(),
+        );
+        let manager = Arc::new(ToolApprovalManager::new());
+        let emitter = Arc::new(CapturingEmitter::default());
+        engine.set_approval_manager(Arc::clone(&manager));
+        engine.set_protocol_writer(emitter.clone());
+        (engine, manager, emitter)
+    }
+
+    /// Resolve `call_id` once it is pending. `ToolRequest` is emitted just
+    /// before the approval is registered, so keep retrying until stopped.
+    fn spawn_resolver(
+        manager: Arc<ToolApprovalManager>,
+        call_id: &'static str,
+        approve: bool,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            for _ in 0..2000 {
+                if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+                let result = if approve {
+                    ToolApprovalResult::Approved
+                } else {
+                    ToolApprovalResult::Denied {
+                        reason: "denied in test".to_string(),
+                    }
+                };
+                manager.resolve(call_id, result);
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+    }
+
+    fn spawner_for(engine: &AgentEngine, provider: MockLlmProvider) -> AgentSpawner {
+        // Even if the spawner's base config says auto-approve, the parent's
+        // live approval state wins once the link is attached.
+        AgentSpawner::new(
+            Arc::new(provider),
+            test_config(),
+            std::env::temp_dir(),
+            ToolPolicy::Unrestricted,
+        )
+        .with_approval_link(engine.approval_link())
+    }
+
+    #[tokio::test]
+    async fn default_mode_child_exec_command_emits_tool_request() {
+        let (engine, manager, emitter) = parent_engine(false);
+        let spawner = spawner_for(&engine, exec_then_finish("child-call-1"));
+
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let resolver = spawn_resolver(Arc::clone(&manager), "child-call-1", false, Arc::clone(&stop));
+        let result = spawner.spawn_one(sub_config()).await;
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        resolver.await.unwrap();
+
+        assert!(!result.is_error, "child should finish after denial: {}", result.text);
+        let requests = emitter.tool_requests();
+        assert_eq!(requests.len(), 1, "expected exactly one tool_request, got {requests:?}");
+        assert_eq!(requests[0].1, "child-call-1");
+        assert_eq!(requests[0].2, "ExecCommand");
+    }
+
+    #[tokio::test]
+    async fn yolo_parent_auto_approves_child_without_tool_request() {
+        let (engine, _manager, emitter) = parent_engine(false);
+        // Host flips the session to YOLO mid-session through the shared flag.
+        engine
+            .auto_approve_handle()
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let spawner = spawner_for(&engine, exec_then_finish("child-call-2"));
+
+        let result = spawner.spawn_one(sub_config()).await;
+
+        assert!(!result.is_error, "{}", result.text);
+        assert_eq!(result.text, "child finished");
+        assert!(emitter.tool_requests().is_empty(), "YOLO parent must not prompt");
+    }
+
+    #[tokio::test]
+    async fn leaving_yolo_restores_child_approval() {
+        let (engine, manager, emitter) = parent_engine(true);
+        engine
+            .auto_approve_handle()
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let spawner = spawner_for(&engine, exec_then_finish("child-call-3"));
+
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let resolver = spawn_resolver(Arc::clone(&manager), "child-call-3", true, Arc::clone(&stop));
+        let result = spawner.spawn_one(sub_config()).await;
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        resolver.await.unwrap();
+
+        assert!(!result.is_error, "{}", result.text);
+        assert_eq!(emitter.tool_requests().len(), 1);
+    }
+}

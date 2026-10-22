@@ -25,6 +25,7 @@ use aion_tools::write::WriteTool;
 use anyhow::Result;
 use tracing::info;
 
+use crate::approval_link::ApprovalLink;
 use crate::context::{SystemPromptCache, build_system_prompt_with_shell_and_tool_policy};
 use crate::context_usage::PromptUsage;
 use crate::engine::AgentEngine;
@@ -174,12 +175,14 @@ impl AgentBootstrap {
         let prompt_usage = self.configure_system_prompt(&environment, &skills);
 
         let auto_approve_flag = Arc::new(AtomicBool::new(self.config.tools.auto_approve));
+        let approval_link = ApprovalLink::new();
         self.register_agent_tools(
             &mut registry,
             &provider,
             &environment.workspace,
             skills,
             Arc::clone(&auto_approve_flag),
+            approval_link.clone(),
         );
         let plan_active_flag = self.register_plan_tools(&mut registry);
         self.register_tool_search(&mut registry);
@@ -194,6 +197,7 @@ impl AgentBootstrap {
             prompt_usage,
         );
         engine.share_auto_approve(auto_approve_flag);
+        engine.attach_approval_link(approval_link);
 
         Ok(BootstrapResult {
             engine,
@@ -346,6 +350,7 @@ impl AgentBootstrap {
         workspace: &Path,
         skills: Vec<SkillMetadata>,
         auto_approve_flag: Arc<AtomicBool>,
+        approval_link: ApprovalLink,
     ) {
         let skill_checker = SkillPermissionChecker::with_shared_auto_approve(
             self.config.tools.skills.deny.clone(),
@@ -364,7 +369,8 @@ impl AgentBootstrap {
             workspace.to_path_buf(),
             self.runtime_env.clone(),
             self.tool_policy.clone(),
-        );
+        )
+        .with_approval_link(approval_link);
         registry.register(Box::new(SpawnTool::new(Arc::new(spawner))));
     }
 
