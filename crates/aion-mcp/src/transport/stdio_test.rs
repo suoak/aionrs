@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::{StdioTransport, inherited_private_env};
+use super::inherited_private_env;
 
 #[test]
 fn inherited_private_env_lists_only_unprovided_aionui_vars() {
@@ -30,6 +30,8 @@ fn inherited_private_env_lists_only_unprovided_aionui_vars() {
 #[cfg(unix)]
 #[tokio::test]
 async fn spawned_mcp_server_does_not_inherit_runtime_token() {
+    use super::StdioTransport;
+
     // SAFETY: test-only mutation; the name is only read by this test's child.
     unsafe {
         std::env::set_var("AIONUI_RUNTIME_TOKEN", "leaked-token");
