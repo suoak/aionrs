@@ -827,6 +827,32 @@ mod tests {
     }
 
     #[test]
+    fn tool_guidance_omits_tool_search_without_deferred_tools() {
+        let mut cache = SystemPromptCache::new();
+        cache.deferred_tools_available = false;
+        let result = build_system_prompt(&mut cache, None, "/tmp", "test-model", &[], None, None, false, false);
+        assert!(!result.contains("ToolSearch"), "no deferred tools → no ToolSearch hint");
+        assert!(result.contains("Always Read a file before editing it."));
+
+        let mut restricted_cache = SystemPromptCache::new();
+        restricted_cache.deferred_tools_available = false;
+        let restricted = build_system_prompt_with_shell_and_tool_policy(
+            &mut restricted_cache,
+            None,
+            "/tmp",
+            "test-model",
+            &default_shell(),
+            &[],
+            None,
+            None,
+            false,
+            false,
+            &ToolPolicy::allow_only(["Read", "ToolSearch"]),
+        );
+        assert!(!restricted.contains("ToolSearch"));
+    }
+
+    #[test]
     fn restricted_policy_only_mentions_authorized_tools() {
         let skills = vec![make_test_skill("hidden-by-policy", "A skill", false, false)];
         let policy = ToolPolicy::allow_only(["Read", "Grep", "Glob", "team_members"]);

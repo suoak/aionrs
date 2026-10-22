@@ -236,4 +236,118 @@ mod tests {
         assert!(is_mcp_private_env("AIONUI_RUNTIME_TOKEN"));
         assert!(!is_mcp_private_env("TEAM_MCP_TOKEN"));
     }
+
+    #[tokio::test]
+    async fn tool_search_not_registered_without_deferred_tools() {
+        let output: Arc<dyn OutputSink> = Arc::new(NullSink);
+        let bootstrap = AgentBootstrap::new(test_config(), "/tmp", output);
+        let mut registry = bootstrap.build_builtin_registry(std::path::Path::new("/tmp"));
+
+        bootstrap.register_tool_search(&mut registry);
+
+        assert!(
+            registry.get("ToolSearch").is_none(),
+            "ToolSearch must not exist without deferred tools"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_search_not_registered_when_only_policy_denied_tools_are_deferred() {
+        let output: Arc<dyn OutputSink> = Arc::new(NullSink);
+        let bootstrap = AgentBootstrap::new(test_config(), "/tmp", output)
+            .tool_policy(ToolPolicy::allow_only(["ToolSearch", "Read"]));
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(DeferredTestTool("DeniedDeferred")));
+
+        bootstrap.register_tool_search(&mut registry);
+
+        assert!(registry.get("ToolSearch").is_none());
+    }
+
+    /// Policy without any deferred built-in (Spawn and the plan tools are
+    /// deferred, so they are left out).
+    fn no_deferred_policy(extra: &[&str]) -> ToolPolicy {
+        let mut names = vec![
+            "Read",
+            "Write",
+            "Edit",
+            "ExecCommand",
+            "Grep",
+            "Glob",
+            "Skill",
+            "ToolSearch",
+        ];
+        names.extend_from_slice(extra);
+        ToolPolicy::allow_only(names)
+    }
+
+    #[tokio::test]
+    async fn built_engine_without_deferred_tools_has_no_tool_search() {
+        let workspace = tempfile::TempDir::new().unwrap();
+        let output: Arc<dyn OutputSink> = Arc::new(NullSink);
+        let result = AgentBootstrap::new(test_config(), workspace.path().to_string_lossy(), output)
+            .tool_policy(no_deferred_policy(&[]))
+            .build()
+            .await
+            .unwrap();
+
+        let names = result.engine.tool_names();
+        assert!(!names.iter().any(|n| n == "ToolSearch"), "{names:?}");
+        assert!(names.iter().any(|n| n == "Skill"));
+        assert!(
+            result.engine.approval_link().is_attached(),
+            "spawner must see the parent's approval wiring"
+        );
+    }
+
+    #[tokio::test]
+    async fn built_engine_keeps_tool_search_when_deferred_spawn_is_available() {
+        let workspace = tempfile::TempDir::new().unwrap();
+        let output: Arc<dyn OutputSink> = Arc::new(NullSink);
+        let result = AgentBootstrap::new(test_config(), workspace.path().to_string_lossy(), output)
+            .build()
+            .await
+            .unwrap();
+
+        let names = result.engine.tool_names();
+        assert!(names.iter().any(|n| n == "Spawn"));
+        assert!(names.iter().any(|n| n == "ToolSearch"), "Spawn is deferred: {names:?}");
+    }
+
+    #[tokio::test]
+    async fn refresh_tool_search_tracks_runtime_deferred_tools() {
+        let workspace = tempfile::TempDir::new().unwrap();
+        let output: Arc<dyn OutputSink> = Arc::new(NullSink);
+        let mut engine = AgentBootstrap::new(test_config(), workspace.path().to_string_lossy(), output)
+            .tool_policy(no_deferred_policy(&["LateDeferred"]))
+            .build()
+            .await
+            .unwrap()
+            .engine;
+        assert!(!engine.tool_names().iter().any(|n| n == "ToolSearch"));
+
+        engine
+            .registry_mut()
+            .register(Box::new(DeferredTestTool("LateDeferred")));
+        engine.refresh_tool_search();
+        assert_eq!(
+            engine
+                .tool_names()
+                .iter()
+                .filter(|n| n.as_str() == "ToolSearch")
+                .count(),
+            1
+        );
+
+        engine.refresh_tool_search();
+        assert_eq!(
+            engine
+                .tool_names()
+                .iter()
+                .filter(|n| n.as_str() == "ToolSearch")
+                .count(),
+            1,
+            "refresh must not duplicate ToolSearch"
+        );
+    }
 }

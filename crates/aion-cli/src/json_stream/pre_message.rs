@@ -105,6 +105,7 @@ pub(super) async fn run(
                             &builtin_names,
                             config.deferred.unwrap_or(true),
                         );
+                        engine.refresh_tool_search();
                         dynamic_managers.push(mgr_arc);
                         let _ = writer.emit(&ProtocolEvent::McpReady {
                             name,

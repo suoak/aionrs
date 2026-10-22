@@ -62,6 +62,13 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// Remove every tool registered under `name`; returns how many were removed.
+    pub fn unregister(&mut self, name: &str) -> usize {
+        let before = self.tools.len();
+        self.tools.retain(|t| t.name() != name);
+        before - self.tools.len()
+    }
+
     /// Whether any registered tool is deferred (schema loaded on demand via
     /// `ToolSearch`).
     pub fn has_deferred_tools(&self) -> bool {

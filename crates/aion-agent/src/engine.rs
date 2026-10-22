@@ -406,6 +406,27 @@ impl AgentEngine {
         &mut self.tools
     }
 
+    /// Rebuild `ToolSearch` after tools were added at runtime (e.g. an MCP
+    /// server connected after bootstrap). `ToolSearch` is registered only
+    /// while at least one policy-allowed deferred tool exists, and its
+    /// snapshot is refreshed so newly added deferred tools are searchable.
+    pub fn refresh_tool_search(&mut self) {
+        self.tools.unregister("ToolSearch");
+        let policy = &self.tool_policy;
+        let has_deferred = self
+            .tools
+            .to_tool_defs_filtered(|tool| tool.is_deferred() && policy.allows(tool.name()))
+            .into_iter()
+            .next()
+            .is_some();
+        if has_deferred {
+            let snapshot = self.tools.to_tool_defs_filtered(|tool| policy.allows(tool.name()));
+            self.tools
+                .register(Box::new(aion_tools::tool_search::ToolSearchTool::new(snapshot)));
+        }
+        self.refresh_local_context_estimate();
+    }
+
     /// Replace the runtime authorization policy for registered tools.
     pub(crate) fn set_tool_policy(&mut self, tool_policy: ToolPolicy) {
         let changed = self.tool_policy != tool_policy;

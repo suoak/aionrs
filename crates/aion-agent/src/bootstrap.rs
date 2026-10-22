@@ -116,6 +116,10 @@ struct BootstrapEnvironment {
     // Prompt context.
     resolved_shell: ResolvedShell,
     memory_dir: Option<PathBuf>,
+
+    // Whether any policy-allowed deferred tool is registered (set after MCP
+    // connects); `ToolSearch` is only registered and advertised when true.
+    deferred_tools_available: bool,
 }
 
 #[derive(Default)]
@@ -209,11 +213,12 @@ impl AgentBootstrap {
     pub async fn build(mut self) -> Result<BootstrapResult> {
         let workspace = self.resolve_workspace_path();
         let provider = self.resolve_provider();
-        let environment = self.resolve_environment(workspace)?;
+        let mut environment = self.resolve_environment(workspace)?;
         let mut registry = self.build_builtin_registry(&environment.workspace);
 
         let builtin_names = registry.tool_names();
         let mcp = self.connect_mcp(&mut registry, &builtin_names).await;
+        environment.deferred_tools_available = self.has_policy_allowed_deferred_tools(&registry);
 
         let skills = self.load_skills(&environment.workspace, mcp.manager.as_deref()).await;
         let prompt_usage = self.configure_system_prompt(&environment, &skills);
@@ -266,6 +271,7 @@ impl AgentBootstrap {
             resolved_shell: resolve_shell_config(&self.config.shell)?,
             memory_dir: auto_memory_dir(&workspace_path),
             workspace: workspace_path,
+            deferred_tools_available: false,
         })
     }
 
@@ -343,6 +349,7 @@ impl AgentBootstrap {
 
     fn configure_system_prompt(&mut self, environment: &BootstrapEnvironment, skills: &[SkillMetadata]) -> PromptUsage {
         let mut prompt_cache = SystemPromptCache::new();
+        prompt_cache.deferred_tools_available = environment.deferred_tools_available;
         let workspace = self.workspace.to_string_lossy();
         let system_prompt = build_system_prompt_with_shell_and_tool_policy(
             &mut prompt_cache,
@@ -429,7 +436,22 @@ impl AgentBootstrap {
         plan_active_flag
     }
 
+    fn has_policy_allowed_deferred_tools(&self, registry: &ToolRegistry) -> bool {
+        registry
+            .to_tool_defs_filtered(|tool| tool.is_deferred() && self.tool_policy.allows(tool.name()))
+            .into_iter()
+            .next()
+            .is_some()
+    }
+
+    /// Register `ToolSearch` only when there is at least one deferred tool it
+    /// could load (C-02). Without deferred tools it would be dead weight in
+    /// every request and invite the model to search for nothing.
     fn register_tool_search(&self, registry: &mut ToolRegistry) {
+        if !self.has_policy_allowed_deferred_tools(registry) {
+            info!(target: "aion_agent", "no deferred tools; ToolSearch not registered");
+            return;
+        }
         let tool_defs_snapshot = registry.to_tool_defs_filtered(|tool| self.tool_policy.allows(tool.name()));
         registry.register(Box::new(ToolSearchTool::new(tool_defs_snapshot)));
     }
