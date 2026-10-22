@@ -1,6 +1,27 @@
 use aion_types::tool::ToolDef;
 
 use crate::Tool;
+use crate::reserved::is_reserved_tool_name;
+
+/// Why an external tool was refused by [`ToolRegistry::register_external`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegisterError {
+    /// The name is a reserved built-in tool name.
+    ReservedName(String),
+    /// A tool with this name is already registered.
+    Duplicate(String),
+}
+
+impl std::fmt::Display for RegisterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReservedName(name) => write!(f, "tool name '{name}' is reserved for a built-in tool"),
+            Self::Duplicate(name) => write!(f, "a tool named '{name}' is already registered"),
+        }
+    }
+}
+
+impl std::error::Error for RegisterError {}
 
 pub struct ToolRegistry {
     tools: Vec<Box<dyn Tool>>,
@@ -16,8 +37,35 @@ impl ToolRegistry {
         Self { tools: Vec::new() }
     }
 
+    /// Register a built-in tool.
+    ///
+    /// External sources (MCP servers, plugins) must use
+    /// [`Self::register_external`] so they cannot claim built-in names.
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         self.tools.push(tool);
+    }
+
+    /// Register a tool from an external source (MCP server, plugin).
+    ///
+    /// Refuses reserved built-in names (see [`crate::reserved`]) and names
+    /// that are already registered, so an external tool can never shadow or
+    /// replace a built-in such as `Skill` or `Spawn`.
+    pub fn register_external(&mut self, tool: Box<dyn Tool>) -> Result<(), RegisterError> {
+        let name = tool.name().to_string();
+        if is_reserved_tool_name(&name) {
+            return Err(RegisterError::ReservedName(name));
+        }
+        if self.get(&name).is_some() {
+            return Err(RegisterError::Duplicate(name));
+        }
+        self.tools.push(tool);
+        Ok(())
+    }
+
+    /// Whether any registered tool is deferred (schema loaded on demand via
+    /// `ToolSearch`).
+    pub fn has_deferred_tools(&self) -> bool {
+        self.tools.iter().any(|t| t.is_deferred())
     }
 
     /// Find a tool by name

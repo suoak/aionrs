@@ -156,6 +156,51 @@ impl Tool for McpToolProxy {
 ///
 /// Each tool's deferred flag is read from the server's config:
 /// `McpServerConfig::deferred` — defaults to `true` when absent.
+/// Name under which an MCP tool is exposed.
+///
+/// Tools colliding with a registered built-in, a reserved built-in name
+/// (`Skill`, `Spawn`, `ToolSearch`, …) or another server's tool get the
+/// `mcp__<server>_<tool>` prefix, so the bare name always resolves to the
+/// built-in.
+fn exposed_mcp_tool_name(
+    manager: &McpManager,
+    server_name: &str,
+    original_name: &str,
+    builtin_names: &[String],
+) -> String {
+    let reserved = aion_tools::reserved::is_reserved_tool_name(original_name);
+    let collides_builtin = reserved || builtin_names.iter().any(|n| n == original_name);
+    let cross_server_collision = manager.tool_name_count(original_name) > 1;
+
+    if reserved {
+        tracing::warn!(
+            target: "aion_mcp",
+            server = %server_name,
+            tool = %original_name,
+            exposed_as = %format!("mcp__{server_name}_{original_name}"),
+            "MCP tool uses a reserved built-in tool name; refusing bare-name registration so the built-in cannot be overridden"
+        );
+    }
+
+    if collides_builtin || cross_server_collision {
+        format!("mcp__{}_{}", server_name, original_name)
+    } else {
+        original_name.to_string()
+    }
+}
+
+fn register_proxy(registry: &mut aion_tools::registry::ToolRegistry, proxy: McpToolProxy) {
+    let server = proxy.server_name.clone();
+    if let Err(err) = registry.register_external(Box::new(proxy)) {
+        tracing::error!(
+            target: "aion_mcp",
+            server = %server,
+            error = %err,
+            "rejected MCP tool registration"
+        );
+    }
+}
+
 pub fn register_mcp_tools(
     registry: &mut aion_tools::registry::ToolRegistry,
     manager: &Arc<McpManager>,
@@ -167,18 +212,7 @@ pub fn register_mcp_tools(
     // Determine which names need prefixing
     for (server_name, tool_def) in &all_tools {
         let original_name = &tool_def.name;
-
-        // Check collision with built-in tools
-        let collides_builtin = builtin_names.iter().any(|n| n == original_name);
-
-        // Check collision with other MCP servers' tools
-        let cross_server_collision = manager.tool_name_count(original_name) > 1;
-
-        let display_name = if collides_builtin || cross_server_collision {
-            format!("mcp__{}_{}", server_name, original_name)
-        } else {
-            original_name.clone()
-        };
+        let display_name = exposed_mcp_tool_name(manager, server_name, original_name, builtin_names);
 
         // MCP tools are deferred by default; server config can override.
         let deferred = server_configs
@@ -196,7 +230,7 @@ pub fn register_mcp_tools(
             deferred,
         );
 
-        registry.register(Box::new(proxy));
+        register_proxy(registry, proxy);
     }
 }
 
@@ -214,14 +248,7 @@ pub fn register_single_server_tools(
 
     for (_, tool_def) in &server_tools {
         let original_name = &tool_def.name;
-        let collides_builtin = builtin_names.iter().any(|n| n == original_name);
-        let cross_server_collision = manager.tool_name_count(original_name) > 1;
-
-        let display_name = if collides_builtin || cross_server_collision {
-            format!("mcp__{}_{}", server_name, original_name)
-        } else {
-            original_name.clone()
-        };
+        let display_name = exposed_mcp_tool_name(manager, server_name, original_name, builtin_names);
 
         let proxy = McpToolProxy::new(
             display_name,
@@ -233,7 +260,7 @@ pub fn register_single_server_tools(
             deferred,
         );
 
-        registry.register(Box::new(proxy));
+        register_proxy(registry, proxy);
     }
 }
 
