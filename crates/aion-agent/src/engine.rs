@@ -123,6 +123,11 @@ pub struct AgentEngine {
     confirmer: Arc<Mutex<ToolConfirmer>>,
     /// Tool names currently allowed without additional approval.
     allow_list: Vec<String>,
+    /// Tools pre-approved by an inline skill's `allowed-tools`. Scoped to the
+    /// run in which the skill was invoked: cleared when that run ends, never
+    /// persisted into `allow_list` / the confirmer, and never containing
+    /// Exec-class tools (see [`is_exec_class_tool`]).
+    skill_allow_list: Vec<String>,
     /// Optional hook engine for lifecycle and tool hooks.
     hooks: Option<HookEngine>,
 
@@ -245,6 +250,7 @@ impl AgentEngine {
             tool_policy: ToolPolicy::default(),
             confirmer: confirmer.clone(),
             allow_list,
+            skill_allow_list: Vec::new(),
             hooks: Some(HookEngine::new_with_env(config.hooks.clone(), cwd.clone(), runtime_env)),
             session_manager,
             current_session: None,
@@ -352,6 +358,7 @@ impl AgentEngine {
             tool_policy: ToolPolicy::default(),
             confirmer: confirmer.clone(),
             allow_list,
+            skill_allow_list: Vec::new(),
             hooks: Some(HookEngine::new_with_env(config.hooks.clone(), cwd, runtime_env)),
             session_manager,
             current_session: Some(session),
@@ -569,7 +576,35 @@ impl AgentEngine {
             session_id = %session_id,
             msg_id = %msg_id,
         );
-        self.run_inner(content_blocks, msg_id).instrument(span).await
+        // Skill `allowed-tools` grants live only for the run that invoked
+        // the skill.
+        self.skill_allow_list.clear();
+        let result = self.run_inner(content_blocks, msg_id).instrument(span).await;
+        self.end_skill_scope();
+        result
+    }
+
+    /// Drop tool pre-approvals granted by skills during the current run.
+    fn end_skill_scope(&mut self) {
+        if !self.skill_allow_list.is_empty() {
+            debug!(
+                target: "aion_agent",
+                tools = ?self.skill_allow_list,
+                "skill allowed-tools scope ended"
+            );
+            self.skill_allow_list.clear();
+        }
+    }
+
+    /// Persistent allow list plus the active skill-scoped grants.
+    fn effective_allow_list(&self) -> Vec<String> {
+        let mut list = self.allow_list.clone();
+        for name in &self.skill_allow_list {
+            if !list.contains(name) {
+                list.push(name.clone());
+            }
+        }
+        list
     }
 
     /// Set the turn id for the NEXT run. Hosts that mint their own turn ids
@@ -895,6 +930,7 @@ impl AgentEngine {
                 .as_ref()
                 .expect("protocol writer required for approval");
             let auto_approve = self.confirmer.lock().unwrap().is_auto_approve();
+            let allow_list = self.effective_allow_list();
             match execute_tool_calls_with_approval_and_output_limit(
                 &self.tools,
                 &executable_tool_calls,
@@ -902,7 +938,7 @@ impl AgentEngine {
                 writer,
                 &self.msg_id,
                 auto_approve,
-                &self.allow_list,
+                &allow_list,
                 self.hooks.as_mut(),
                 self.compact_level,
                 self.toon_enabled,
@@ -924,6 +960,7 @@ impl AgentEngine {
                 &self.tools,
                 &executable_tool_calls,
                 &self.confirmer,
+                &self.skill_allow_list,
                 self.hooks.as_mut(),
                 self.compact_level,
                 self.toon_enabled,
@@ -1675,10 +1712,17 @@ impl AgentEngine {
                 self.reasoning_effort = Some(effort_to_string(effort));
             }
             for tool_name in &modifier.allowed_tools {
-                if !self.allow_list.contains(tool_name) {
-                    self.allow_list.push(tool_name.clone());
+                if is_exec_class_tool(&self.tools, tool_name) {
+                    warn!(
+                        target: "aion_agent",
+                        tool = %tool_name,
+                        "ignoring skill allowed-tools entry: Exec-class tools always require approval"
+                    );
+                    continue;
                 }
-                self.confirmer.lock().unwrap().add_to_allow_list(tool_name);
+                if !self.skill_allow_list.contains(tool_name) {
+                    self.skill_allow_list.push(tool_name.clone());
+                }
             }
 
             // Handle plan mode transitions
@@ -1801,6 +1845,39 @@ struct ToolRoundOutput {
     tool_call_failure_fingerprint: Option<ToolCallFailureFingerprint>,
     /// Whether the round had a non-malformed call and every result was an error.
     all_tool_results_error: bool,
+}
+
+/// Tool names (case-insensitive, `Name(args)` pattern suffix ignored) that are
+/// treated as command execution even when not registered under that name.
+const EXEC_CLASS_TOOL_NAMES: &[&str] = &[
+    "execcommand",
+    "exec",
+    "exec_command",
+    "shell",
+    "bash",
+    "sh",
+    "zsh",
+    "powershell",
+    "pwsh",
+    "cmd",
+    "terminal",
+    "run_shell_command",
+    "spawn",
+];
+
+/// Whether a skill `allowed-tools` entry names an Exec-class tool. Such
+/// tools are never pre-approved by a skill: either the registered tool has
+/// [`ToolCategory::Exec`], or the name is a well-known shell alias.
+pub(crate) fn is_exec_class_tool(tools: &ToolRegistry, name: &str) -> bool {
+    let base = name.split('(').next().unwrap_or(name).trim();
+    if tools
+        .get(base)
+        .is_some_and(|tool| tool.category() == ToolCategory::Exec)
+    {
+        return true;
+    }
+    let lower = base.to_ascii_lowercase();
+    EXEC_CLASS_TOOL_NAMES.contains(&lower.as_str())
 }
 
 fn append_tool_loop_warning(tool_results: &mut [ContentBlock], warning: ToolLoopWarning) {

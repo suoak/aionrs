@@ -95,6 +95,8 @@ impl ToolExecutionContext {
 enum ApprovalProvider<'a> {
     Terminal {
         confirmer: &'a Arc<Mutex<ToolConfirmer>>,
+        /// Run-scoped grants from skill `allowed-tools`.
+        scoped_allow: &'a [String],
     },
     Protocol {
         manager: &'a Arc<ToolApprovalManager>,
@@ -146,7 +148,13 @@ impl ApprovalProvider<'_> {
             return Ok(ApprovalDecision::Approved);
         };
         match self {
-            Self::Terminal { confirmer } => {
+            Self::Terminal {
+                confirmer,
+                scoped_allow,
+            } => {
+                if scoped_allow.iter().any(|allowed| allowed == name) {
+                    return Ok(ApprovalDecision::Approved);
+                }
                 let input_display = serde_json::to_string(input).unwrap_or_default();
                 match confirmer
                     .lock()
@@ -245,6 +253,7 @@ pub async fn execute_tool_calls(
         registry,
         tool_calls,
         confirmer,
+        &[],
         hooks,
         compaction_level,
         toon_enabled,
@@ -260,6 +269,7 @@ pub(crate) async fn execute_tool_calls_with_output_limit(
     registry: &ToolRegistry,
     tool_calls: &[ContentBlock],
     confirmer: &Arc<Mutex<ToolConfirmer>>,
+    scoped_allow: &[String],
     mut hooks: Option<&mut HookEngine>,
     compaction_level: aion_compact::CompactLevel,
     toon_enabled: bool,
@@ -270,7 +280,10 @@ pub(crate) async fn execute_tool_calls_with_output_limit(
     let mut results = Vec::new();
     let mut modifiers = Vec::new();
     let mut follow_up_blocks = Vec::new();
-    let approval = ApprovalProvider::Terminal { confirmer };
+    let approval = ApprovalProvider::Terminal {
+        confirmer,
+        scoped_allow,
+    };
 
     for batch in partition(registry, tool_calls) {
         if batch.is_concurrent {
