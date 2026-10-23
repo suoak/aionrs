@@ -636,4 +636,95 @@ mod tests {
             other => panic!("unexpected projection error: {other}"),
         }
     }
+
+    /// M7 E2 acceptance: with 80 MCP tools mounted (deferred, as Core sends
+    /// user/session MCP servers), the first request carries at most 40 full
+    /// schemas and the tool payload shrinks by at least 40%.
+    fn e2_core_tool(i: usize) -> ToolDef {
+        ToolDef {
+            name: format!("Core{i}"),
+            description: format!("Built-in tool {i}: reads, edits and searches files in the workspace."),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute or workspace-relative path"},
+                    "pattern": {"type": "string", "description": "Search pattern"}
+                },
+                "required": ["path"]
+            }),
+            deferred: false,
+        }
+    }
+
+    fn e2_mcp_tool(server: usize, i: usize, deferred: bool) -> ToolDef {
+        ToolDef {
+            name: format!("mcp__server{server}__tool_{i}"),
+            description: format!(
+                "Tool {i} of MCP server {server}. Queries the remote service, filters the results by the \
+                 given fields and returns a paginated list. Supports sorting, cursor-based pagination and \
+                 an optional dry-run mode that only validates the request."
+            ),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Free-text query sent to the service"},
+                    "fields": {"type": "array", "items": {"type": "string"}, "description": "Fields to return"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Page size"},
+                    "cursor": {"type": "string", "description": "Opaque cursor from the previous page"},
+                    "sort": {"type": "string", "enum": ["asc", "desc"], "description": "Sort order"},
+                    "dry_run": {"type": "boolean", "description": "Validate without executing"}
+                },
+                "required": ["query"]
+            }),
+            deferred,
+        }
+    }
+
+    fn e2_tools(deferred: bool) -> Vec<ToolDef> {
+        let mut tools: Vec<ToolDef> = (0..12).map(e2_core_tool).collect();
+        // 4 servers x 20 tools = 80 MCP tools.
+        for server in 0..4 {
+            tools.extend((0..20).map(|i| e2_mcp_tool(server, i, deferred)));
+        }
+        tools
+    }
+
+    type SchemaOf = fn(&serde_json::Value) -> &serde_json::Value;
+
+    fn e2_full_schema_count(projected: &[serde_json::Value], schema_of: SchemaOf) -> usize {
+        projected
+            .iter()
+            .filter(|tool| {
+                schema_of(tool)
+                    .get("properties")
+                    .and_then(|p| p.as_object())
+                    .is_some_and(|p| !p.is_empty())
+            })
+            .count()
+    }
+
+    #[test]
+    fn e2_eighty_deferred_mcp_tools_keep_first_turn_schemas_under_forty() {
+        let shapes: [(ResolvedToolWireShape, SchemaOf); 2] = [
+            (ResolvedToolWireShape::OpenAiFunction, |t| &t["function"]["parameters"]),
+            (ResolvedToolWireShape::AnthropicInputSchema, |t| &t["input_schema"]),
+        ];
+        for (shape, schema_of) in shapes {
+            let deferred = project_tools(&e2_tools(true), shape);
+            let eager = project_tools(&e2_tools(false), shape);
+            assert_eq!(deferred.len(), 92, "every tool stays callable by name ({shape:?})");
+
+            let full = e2_full_schema_count(&deferred, schema_of);
+            assert!(full <= 40, "{full} full schemas on the first turn ({shape:?})");
+            assert_eq!(full, 12, "only built-in tools carry a full schema ({shape:?})");
+            assert_eq!(e2_full_schema_count(&eager, schema_of), 92);
+
+            let deferred_bytes = serde_json::to_string(&deferred).unwrap().len();
+            let eager_bytes = serde_json::to_string(&eager).unwrap().len();
+            assert!(
+                deferred_bytes * 10 <= eager_bytes * 6,
+                "tool payload {deferred_bytes}B vs {eager_bytes}B is not at least 40% smaller ({shape:?})"
+            );
+        }
+    }
 }
