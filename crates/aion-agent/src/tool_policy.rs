@@ -11,6 +11,12 @@ pub enum ToolPolicy {
     Unrestricted,
     /// Only tools whose exact names are present in the set are available.
     AllowOnly(BTreeSet<String>),
+    /// Every registered tool except those whose exact names are in the set.
+    ///
+    /// Use when the full tool surface (e.g. MCP tools registered during
+    /// bootstrap) is not known up front but specific built-ins such as
+    /// `Spawn` must be removed. Matching is exact, like `AllowOnly`.
+    Deny(BTreeSet<String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,10 +54,20 @@ impl ToolPolicy {
         Self::AllowOnly(tool_names.into_iter().map(Into::into).collect())
     }
 
+    /// Exclude the named tools; everything else stays available.
+    pub fn deny<I, S>(tool_names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self::Deny(tool_names.into_iter().map(Into::into).collect())
+    }
+
     pub fn allows(&self, tool_name: &str) -> bool {
         match self {
             Self::Unrestricted => true,
             Self::AllowOnly(tool_names) => tool_names.contains(tool_name),
+            Self::Deny(tool_names) => !tool_names.contains(tool_name),
         }
     }
 
