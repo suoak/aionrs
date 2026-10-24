@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.26](https://github.com/suoak/aionrs/compare/v0.2.25...v0.2.26) (2026-10-24)
+
+
+### Features
+
+* **agent:** add ToolPolicy::Deny for name-based tool exclusion ([#30](https://github.com/suoak/aionrs/issues/30)) ([d2bc295](https://github.com/suoak/aionrs/commit/d2bc295fb4b0658b8d90d96c31b2ec59c5b498f2))
+
 ## [0.2.25](https://github.com/suoak/aionrs/compare/v0.2.24...v0.2.25) (2026-10-22)
 
 
