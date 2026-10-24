@@ -29,3 +29,20 @@ fn allow_only_policy_matches_exact_tool_names() {
     assert!(!policy.allows("Write"));
     assert!(!policy.allows("read"));
 }
+
+#[test]
+fn deny_policy_removes_only_exact_names() {
+    let policy = ToolPolicy::deny(["Spawn"]);
+
+    assert!(!policy.allows("Spawn"));
+    assert!(policy.allows("spawn"), "exact match, like AllowOnly");
+    assert!(policy.allows("Write"));
+    assert!(policy.allows("mcp__srv_any_tool"));
+    assert_eq!(policy.decision("Spawn"), ToolGateDecision::Deny(ToolGateDenial::Policy));
+    assert_eq!(policy.decision("Read"), ToolGateDecision::Allow);
+}
+
+#[test]
+fn empty_deny_policy_allows_everything() {
+    assert!(ToolPolicy::deny(Vec::<String>::new()).allows("Spawn"));
+}
